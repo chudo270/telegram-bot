@@ -1,31 +1,61 @@
 import os
-import time
-import random
 import logging
 import asyncio
-import requests
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime
 
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "69033573"))  # fallback на твой ID
+# Логирование
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=API_TOKEN)
+# Переменные окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # Например: -1001234567890
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # ID админа Telegram
+DATA_URL = os.getenv("DATA_URL")  # URL YML или API
+
+# Фильтрация
+MIN_PRICE = int(os.getenv("MIN_PRICE", "300"))
+
+# Инициализация бота и диспетчера
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-published_ids = set()
-paused = False
+# Память для кеша
+posted_products = set()
+is_paused = False
 
-def get_products():
-    try:
-        response = requests.get("https://mytoy66.ru/integration?int=avito&name=avitoo")
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logging.error(f"Ошибка при получении товаров: {e}")
-        return []
+async def fetch_products():
+    async with aiohttp.ClientSession() as session:
+        async with session.get(DATA_URL) as response:
+            if response.status != 200:
+                raise Exception(f"Ошибка загрузки данных: {response.status}")
+            data = await response.json()
+
+            # Примерная структура: [{"name": "...", "price": "...", "photo": "..."}]
+            products = []
+            for product in data:
+                price = str(product.get("price", "0")).replace("₽", "").replace(",", ".")
+                if price:
+                    try:
+                        price_value = float(price)
+                        if price_value < MIN_PRICE:
+                            continue
+                        product["price"] = f"{int(price_value)} руб."
+                    except ValueError:
+                        continue
+                else:
+                    continue
+
+                if not product.get("photo") or not product.get("description"):
+                    continue
+
+                products.append(product)
+
+            return products
 
 def generate_post(product):
     text = f"{product['name']}\n\n"
@@ -34,7 +64,7 @@ def generate_post(product):
     if product.get("article"):
         text += f"Артикул: {product['article']}\n"
     if product.get("price"):
-        text += f"Цена: {product['price']} руб.\n"
+        text += f"Цена: {product['price']}\n"
     if product.get("description"):
         text += f"\n{product['description']}"
     else:
@@ -45,178 +75,79 @@ def generate_post(product):
         keyboard.add(InlineKeyboardButton("Подробнее", url=product["url"]))
     return text, keyboard
 
-async def publish_next():
-    global published_ids
-    products = get_products()
-    random.shuffle(products)
-    for product in products:
-        if product.get("id") in published_ids:
-            continue
-        if not product.get("image") or not product.get("description"):
-            continue
-        if int(product.get("price", 0)) < 300:
-            continue
+async def publish_next_product():
+    global posted_products, is_paused
 
-        text, keyboard = generate_post(product)
-        try:
-            if product.get("image"):
-                await bot.send_photo(CHANNEL_ID, photo=product["image"], caption=text, reply_markup=keyboard)
+    if is_paused:
+        return
+
+    try:
+        products = await fetch_products()
+        for product in products:
+            product_id = product.get("id") or product.get("article") or product.get("name")
+            if product_id in posted_products:
+                continue
+
+            text, keyboard = generate_post(product)
+            photo = product.get("photo")
+
+            if photo:
+                await bot.send_photo(CHANNEL_ID, photo=photo, caption=text, reply_markup=keyboard)
             else:
                 await bot.send_message(CHANNEL_ID, text, reply_markup=keyboard)
-            published_ids.add(product["id"])
-            break
-        except Exception as e:
-            logging.error(f"Ошибка при публикации: {e}")
 
+            posted_products.add(product_id)
+            break
+
+    except Exception as e:
+        logging.error(f"Ошибка публикации: {e}")
+        await bot.send_message(ADMIN_ID, f"Ошибка публикации:\n{e}")
+
+# Команды для управления ботом
 @dp.message_handler(commands=["start", "help"])
-async def send_welcome(message: types.Message):
+async def cmd_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.reply("Доступные команды:\n/next — опубликовать следующий товар\n/pause — пауза/возобновление\n/status — статус\n/log — лог")
+    await message.reply("Доступные команды:\n/next — следующий товар\n/pause — пауза\n/resume — продолжить\n/status — статус\n/log — лог")
 
 @dp.message_handler(commands=["next"])
 async def cmd_next(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await publish_next()
-    await message.reply("Попробовал опубликовать следующий товар.")
+    if message.from_user.id == ADMIN_ID:
+        await publish_next_product()
+        await message.reply("Опубликован следующий товар.")
 
 @dp.message_handler(commands=["pause"])
 async def cmd_pause(message: types.Message):
-    global paused
-    if message.from_user.id != ADMIN_ID:
-        return
-    paused = not paused
-    status = "Пауза" if paused else "Возобновил публикации"
-    await message.reply(status)
+    global is_paused
+    if message.from_user.id == ADMIN_ID:
+        is_paused = True
+        await message.reply("Публикация приостановлена.")
+
+@dp.message_handler(commands=["resume"])
+async def cmd_resume(message: types.Message):
+    global is_paused
+    if message.from_user.id == ADMIN_ID:
+        is_paused = False
+        await message.reply("Публикация возобновлена.")
 
 @dp.message_handler(commands=["status"])
 async def cmd_status(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.reply(f"Статус: {'Пауза' if paused else 'Активен'}\nОпубликовано товаров: {len(published_ids)}")
+    if message.from_user.id == ADMIN_ID:
+        status = "на паузе" if is_paused else "активен"
+        await message.reply(f"Бот сейчас: {status}. Опубликовано товаров: {len(posted_products)}")
 
 @dp.message_handler(commands=["log"])
 async def cmd_log(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.reply("Логирование включено. Ошибки пишутся в консоль.")
+    if message.from_user.id == ADMIN_ID:
+        await message.reply("Пока логов нет или они в stdout.")
 
-async def scheduler():
-    while True:
-        if not paused:
-            now = time.localtime()
-            if now.tm_hour == 12 and now.tm_min == 0:
-                await publish_next()
-                await asyncio.sleep(60)
-        await asyncio.sleep(30)
+# Планировщик публикации
+scheduler = AsyncIOScheduler()
+scheduler.add_job(publish_next_product, "cron", hour=12, minute=0)  # каждый день в 12:00
+
+async def on_startup(dp):
+    scheduler.start()
+    await bot.send_message(ADMIN_ID, f"Бот запущен: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    loop = asyncio.get_event_loop()
-    loop.create_task(scheduler())
-    executor.start_polling(dp, skip_updates=True)
-
-    except Exception as e:
-        print(f"Ошибка при получении товаров с сайта: {e}")
-        return []
-
-def fetch_yml_products():
-    try:
-        response = requests.get(FALLBACK_YML_URL)
-        products = []
-        root = ET.fromstring(response.content)
-        for offer in root.findall(".//offer"):
-            name = offer.find("name").text if offer.find("name") is not None else None
-            price = offer.find("price").text if offer.find("price") is not None else None
-            picture = offer.find("picture").text if offer.find("picture") is not None else None
-            url = offer.find("url").text if offer.find("url") is not None else None
-
-            if not name or not price or not picture or not url:
-                continue
-
-            try:
-                price_val = int(float(price))
-            except ValueError:
-                continue
-
-            if price_val < MIN_PRICE:
-                continue
-
-            products.append({
-                "title": name,
-                "price": price_val,
-                "image": picture,
-                "url": url
-            })
-        return products
-    except Exception as e:
-        print(f"Ошибка при получении товаров из YML: {e}")
-        return []
-
-def generate_caption(product):
-    return f"{product['title']}"
-
-Цена: {product['price']}₽
-Ссылка: {product['url']}"
-
-def publish_product():
-    global used_products
-    if paused:
-        print("Бот на паузе, публикация отменена")
-        return
-
-    products = fetch_products()
-    if not products:
-        print("Основной сайт не дал товаров, используем YML")
-        products = fetch_yml_products()
-
-    products = [p for p in products if p["url"] not in used_products]
-
-    if not products:
-        print("Нет новых товаров для публикации")
-        return
-
-    product = random.choice(products)
-    used_products.append(product["url"])
-
-    try:
-        bot.send_photo(CHANNEL_ID, product["image"], caption=generate_caption(product))
-        print(f"Опубликован товар: {product['title']}")
-    except Exception as e:
-        print(f"Ошибка при публикации товара: {e}")
-
-@bot.message_handler(commands=["next", "pause", "resume", "status", "log"])
-def handle_commands(message):
-    global paused
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "У вас нет доступа")
-        return
-
-    cmd = message.text.strip().lower()
-    if cmd == "/next":
-        publish_product()
-        bot.reply_to(message, "Товар опубликован")
-    elif cmd == "/pause":
-        paused = True
-        bot.reply_to(message, "Пауза активирована")
-    elif cmd == "/resume":
-        paused = False
-        bot.reply_to(message, "Пауза отключена")
-    elif cmd == "/status":
-        status = "на паузе" if paused else "активен"
-        bot.reply_to(message, f"Статус: {status}")
-    elif cmd == "/log":
-        bot.reply_to(message, f"Использовано товаров: {len(used_products)}")
-
-def scheduler_loop():
-    schedule.every().day.at(f"{POST_HOUR:02d}:00").do(publish_product)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-import threading
-threading.Thread(target=scheduler_loop).start()
-
-print("Бот запущен. Ожидаем публикации...")
-bot.infinity_polling()
+    executor.start_polling(dp, on_startup=on_startup)
