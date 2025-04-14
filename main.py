@@ -96,7 +96,8 @@ def fetch_yml_products():
         return []
 
 def generate_caption(product):
-    return f"{product['title']}
+    return f"{product['title']}"
+
 Цена: {product['price']}₽
 Ссылка: {product['url']}"
 
