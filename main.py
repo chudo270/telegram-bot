@@ -1,63 +1,122 @@
-import telebot
-import requests
+import os
 import time
 import random
-from datetime import datetime
-import schedule
-from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET
+import logging
+import asyncio
+import requests
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
-TOKEN = "7891783737:AAGYR-iEqMO6ZlT3wIJdOTtx94Yb0jFLj20"
-CHANNEL_ID = "@mytoy_test"
-ADMIN_ID = 69033573
-bot = telebot.TeleBot(TOKEN)
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "69033573"))  # fallback на твой ID
 
-POST_HOUR = 12
-MIN_PRICE = 300
-FALLBACK_YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 
+published_ids = set()
 paused = False
-used_products = []
 
-def fetch_products():
+def get_products():
     try:
-        response = requests.get("https://mytoy66.ru")
-        soup = BeautifulSoup(response.text, "html.parser")
-        products = []
+        response = requests.get("https://mytoy66.ru/integration?int=avito&name=avitoo")
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"Ошибка при получении товаров: {e}")
+        return []
 
-        for item in soup.select(".product-card"):
-            title = item.select_one(".product-card-title")
-            price = item.select_one(".product-card-price")
-            img = item.select_one("img")
-            link = item.select_one("a")
+def generate_post(product):
+    text = f"{product['name']}\n\n"
+    if product.get("category"):
+        text += f"Категория: {product['category']}\n"
+    if product.get("article"):
+        text += f"Артикул: {product['article']}\n"
+    if product.get("price"):
+        text += f"Цена: {product['price']} руб.\n"
+    if product.get("description"):
+        text += f"\n{product['description']}"
+    else:
+        text += "\nОписание скоро появится!"
 
-            if not (title and price and img and link):
-                continue
+    keyboard = InlineKeyboardMarkup()
+    if product.get("url"):
+        keyboard.add(InlineKeyboardButton("Подробнее", url=product["url"]))
+    return text, keyboard
 
-            title_text = title.text.strip()
-            price_text = price.text.strip().replace("₽", "").replace(" ", "")
-            image_url = img["src"]
-            product_url = link["href"]
+async def publish_next():
+    global published_ids
+    products = get_products()
+    random.shuffle(products)
+    for product in products:
+        if product.get("id") in published_ids:
+            continue
+        if not product.get("image") or not product.get("description"):
+            continue
+        if int(product.get("price", 0)) < 300:
+            continue
 
-            if not title_text or not price_text or not image_url:
-                continue
+        text, keyboard = generate_post(product)
+        try:
+            if product.get("image"):
+                await bot.send_photo(CHANNEL_ID, photo=product["image"], caption=text, reply_markup=keyboard)
+            else:
+                await bot.send_message(CHANNEL_ID, text, reply_markup=keyboard)
+            published_ids.add(product["id"])
+            break
+        except Exception as e:
+            logging.error(f"Ошибка при публикации: {e}")
 
-            try:
-                price_val = int(price_text)
-            except ValueError:
-                continue
+@dp.message_handler(commands=["start", "help"])
+async def send_welcome(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply("Доступные команды:\n/next — опубликовать следующий товар\n/pause — пауза/возобновление\n/status — статус\n/log — лог")
 
-            if price_val < MIN_PRICE:
-                continue
+@dp.message_handler(commands=["next"])
+async def cmd_next(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await publish_next()
+    await message.reply("Попробовал опубликовать следующий товар.")
 
-            products.append({
-                "title": title_text,
-                "price": price_val,
-                "image": image_url,
-                "url": product_url
-            })
+@dp.message_handler(commands=["pause"])
+async def cmd_pause(message: types.Message):
+    global paused
+    if message.from_user.id != ADMIN_ID:
+        return
+    paused = not paused
+    status = "Пауза" if paused else "Возобновил публикации"
+    await message.reply(status)
 
-        return products
+@dp.message_handler(commands=["status"])
+async def cmd_status(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply(f"Статус: {'Пауза' if paused else 'Активен'}\nОпубликовано товаров: {len(published_ids)}")
+
+@dp.message_handler(commands=["log"])
+async def cmd_log(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply("Логирование включено. Ошибки пишутся в консоль.")
+
+async def scheduler():
+    while True:
+        if not paused:
+            now = time.localtime()
+            if now.tm_hour == 12 and now.tm_min == 0:
+                await publish_next()
+                await asyncio.sleep(60)
+        await asyncio.sleep(30)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    loop = asyncio.get_event_loop()
+    loop.create_task(scheduler())
+    executor.start_polling(dp, skip_updates=True)
+
     except Exception as e:
         print(f"Ошибка при получении товаров с сайта: {e}")
         return []
