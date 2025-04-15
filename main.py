@@ -138,14 +138,7 @@ def schedule_posts(app: Application):
     scheduler.start()
 
 # Webhook запуск
-    try:
-    except RuntimeError as e:
         if str(e).startswith("This event loop is already running"):
-            import nest_asyncio
-            nest_asyncio.apply()
-            asyncio.get_event_loop().run_until_complete(main())
-
-
 async def post_init(application):
     await load_products()
     schedule_posts(application)
