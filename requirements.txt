@@ -6,4 +6,5 @@ nest_asyncio
 feedparser
 beautifulsoup4
 aiohttp
+python-telegram-bot[webhooks]
 
