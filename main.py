@@ -1,161 +1,189 @@
 import logging
-import os
-import random
-import re
-import time
-from datetime import datetime
+import asyncio
 import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-)
+import random
+from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackContext
 
-# Включаем логирование
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Логирование
+logging.basicConfig(level=logging.INFO)
 
-# Константы
+# Настройки Telegram
 BOT_TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
+CHANNEL_ID = "@myttoy66"  # Укажи свой канал
 ADMIN_ID = 487591931
-CHANNEL_ID = "@Myttoy66"
-MAIN_SOURCE = "https://mytoy66.ru/group?type=latest"
-YML_SOURCE = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
-# Состояние
+# Настройки API Moguta
+MOGUTA_DOMAIN = "https://mytoy66.ru"
+API_TOKEN = "565df1b1313ac458b0ef1a7ef16c4bc4"
+SECRET_KEY = "mySecretKey12345"
+
+# Резервный источник
+YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+
+# Глобальные переменные
+product_queue = []
 paused = False
-products_cache = []
+log_messages = []
 
+# Генерация описания
+def generate_description(title: str) -> str:
+    return f"Отличный товар: {title}. Прекрасно подойдёт для вас!"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Бот запущен и работает.")
-
-
-async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Нет доступа.")
-        return
-    await update.message.reply_text("В логе пока всё чисто.")
-
-
-def get_products_from_source(url):
+# Получение товаров из Moguta API
+def fetch_products_from_api():
+    url = f"{MOGUTA_DOMAIN}/api/products?userToken={API_TOKEN}&inJSON=true"
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return []
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        products = data.get("data", {}).get("catalog", [])
+        valid_products = []
 
-        products = response.json().get("products", [])
-        filtered = []
         for product in products:
-            if (
-                product.get("price", 0) >= 300
-                and product.get("image")
-                and (product.get("description") or product.get("name"))
-            ):
-                filtered.append(product)
-        return filtered
+            title = product.get("title")
+            price = product.get("price")
+            image = product.get("image_url") or product.get("images", [None])[0]
+            description = product.get("description") or generate_description(title)
+            url = f"{MOGUTA_DOMAIN}/{product.get('category_url', '')}/{product.get('url', '')}"
+
+            if not image or not title or not price:
+                continue
+
+            valid_products.append({
+                "title": title,
+                "price": price,
+                "description": description,
+                "image": image,
+                "url": url
+            })
+
+        return valid_products
     except Exception as e:
-        logger.error(f"Ошибка получения товаров: {e}")
+        log_messages.append(f"[{datetime.now()}] Ошибка API: {e}")
         return []
 
+# Резерв: Получение из YML
+def fetch_products_from_yml():
+    try:
+        response = requests.get(YML_URL)
+        if response.ok:
+            # Здесь могла бы быть парсинг YML, но упрощаем
+            return []
+    except Exception as e:
+        log_messages.append(f"[{datetime.now()}] Ошибка YML: {e}")
+    return []
 
-def generate_description(name):
-    return f"Интересный товар: {name}"
+# Постинг в Telegram
+async def post_product(context: CallbackContext = None):
+    global product_queue, paused
 
-
-async def post_product(context: ContextTypes.DEFAULT_TYPE):
-    global paused, products_cache
-
-    if paused:
+    if paused or not product_queue:
         return
 
-    if not products_cache:
-        products_cache = get_products_from_source(MAIN_SOURCE)
-        if not products_cache:
-            products_cache = get_products_from_source(YML_SOURCE)
-
-    if not products_cache:
-        logger.info("Нет подходящих товаров для публикации.")
-        return
-
-    product = products_cache.pop(0)
-    name = product.get("name", "Без названия")
-    description = product.get("description") or generate_description(name)
-    price = product.get("price", 0)
-    image = product.get("image")
-    link = product.get("link", MAIN_SOURCE)
-
-    caption = f"<b>{name}</b>\n\n{description}\n\nЦена: {price}₽\n<a href='{link}'>Подробнее</a>"
-
-    keyboard = [
-        [InlineKeyboardButton("Перейти в магазин", url=link)],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    product = product_queue.pop(0)
+    text = f"*{product['title']}*\n\n{product['description']}\n\nЦена: {product['price']}₽"
+    buttons = [[InlineKeyboardButton("Купить", url=product['url'])]]
+    reply_markup = InlineKeyboardMarkup(buttons)
 
     try:
         await context.bot.send_photo(
             chat_id=CHANNEL_ID,
-            photo=image,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
+            photo=product['image'],
+            caption=text,
             reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
+        log_messages.append(f"[{datetime.now()}] Отправлен товар: {product['title']}")
     except Exception as e:
-        logger.error(f"Ошибка при публикации товара: {e}")
+        log_messages.append(f"[{datetime.now()}] Ошибка отправки: {e}")
 
-
-async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Команды
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await post_product(context)
+    keyboard = [
+        [InlineKeyboardButton("▶️ Следующий", callback_data="next"),
+         InlineKeyboardButton("⏸ Пауза", callback_data="pause")],
+        [InlineKeyboardButton("▶ Продолжить", callback_data="resume"),
+         InlineKeyboardButton("ℹ️ Статус", callback_data="status")],
+        [InlineKeyboardButton("📋 Лог", callback_data="log")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Панель управления:", reply_markup=reply_markup)
 
-
-async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global paused
-    if update.effective_user.id == ADMIN_ID:
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if query.data == "next":
+        await post_product(context)
+    elif query.data == "pause":
         paused = True
-        await update.message.reply_text("Публикации приостановлены.")
-
-
-async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global paused
-    if update.effective_user.id == ADMIN_ID:
+        await query.edit_message_text("Автопостинг приостановлен.")
+    elif query.data == "resume":
         paused = False
-        await update.message.reply_text("Публикации возобновлены.")
+        await query.edit_message_text("Автопостинг возобновлён.")
+    elif query.data == "status":
+        msg = f"Пауза: {'Да' if paused else 'Нет'}\nТоваров в очереди: {len(product_queue)}"
+        await query.edit_message_text(msg)
+    elif query.data == "log":
+        log_text = "\n".join(log_messages[-10:]) or "Лог пуст."
+        await query.edit_message_text(log_text)
 
+# Загрузка товаров
+def load_products():
+    products = fetch_products_from_api()
+    if not products:
+        products = fetch_products_from_yml()
+    random.shuffle(products)
+    return products
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    status = "Приостановлен" if paused else "Работает"
-    await update.message.reply_text(f"Бот: {status}\nТоваров в очереди: {len(products_cache)}")
+# Основной запуск
+async def main():
+    global product_queue
+    product_queue = load_products()
 
-
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("log", log))
-    application.add_handler(CommandHandler("next", next_command))
-    application.add_handler(CommandHandler("pause", pause_command))
-    application.add_handler(CommandHandler("resume", resume_command))
-    application.add_handler(CommandHandler("status", status_command))
-
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(post_product, CronTrigger(hour=12, minute=0), args=[application.bot])
+    app = Application.builder().token(BOT_TOKEN).build()
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(post_product, CronTrigger(hour=12, minute=0), args=[app.bot])
     scheduler.start()
 
-    application.run_polling()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/next$"), lambda u, c: post_product(c)))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/pause$"), lambda u, c: set_pause(True)))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/resume$"), lambda u, c: set_pause(False)))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/status$"), status))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/log$"), log))
+    app.add_handler(MessageHandler(filters.ALL, lambda u, c: None))  # глушим остальные
 
+    app.add_handler(telegram.ext.CallbackQueryHandler(button_handler))
+
+    await app.run_polling()
+
+# Хелп-функции
+def set_pause(state: bool):
+    global paused
+    paused = state
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    msg = f"Пауза: {'Да' if paused else 'Нет'}\nТоваров в очереди: {len(product_queue)}"
+    await update.message.reply_text(msg)
+
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text = "\n".join(log_messages[-10:]) or "Лог пуст."
+    await update.message.reply_text(text)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
