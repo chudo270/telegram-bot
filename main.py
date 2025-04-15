@@ -11,7 +11,7 @@ from datetime import datetime, time
 
 TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
 ADMIN_ID = 487591931
-CHANNEL_ID = "@mytoy66"
+CHANNEL_ID = "@myttoy66"
 YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
 logging.basicConfig(level=logging.INFO)
