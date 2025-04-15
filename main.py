@@ -1,164 +1,138 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
-import asyncio
-import datetime
 import requests
-from bs4 import BeautifulSoup
-from flask import Flask
-from threading import Thread
+import random
+import time
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.constants import ParseMode
+from telegram.update import Update
 
-# === Web-сервер для "пробуждения" ===
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Я жив!"
-
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
-# === Конфигурация ===
-BOT_TOKEN = 'твой_токен'
+# --- НАСТРОЙКИ ---
+TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
+CHANNEL_ID = '@Botrepostai_bot'
 ADMIN_ID = 487591931
-posting_paused = False
-current_product_index = 0
-products_cache = []
+MAIN_URL = 'https://mytoy66.ru/group?type=latest'
+RESERVE_URL = 'https://mytoy66.ru/integration?int=avito&name=avitoo'
+POST_HOUR = 12
+POST_MINUTE = 0
 
-# === Логгирование ===
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# --- ЛОГИ ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# === Пример генерации описания ===
-def generate_description(title):
-    return f"Это отличный товар: {title}. Отличный выбор!"
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+pause = False
+product_cache = []
+last_posted = set()
 
-# === Загрузка товаров ===
-def load_products():
-    global products_cache
-    products_cache.clear()
-
+# --- ПОЛУЧЕНИЕ ТОВАРОВ ---
+def fetch_products():
     try:
-        html = requests.get("https://mytoy66.ru/group?type=latest", timeout=10).text
-        soup = BeautifulSoup(html, "html.parser")
-        for item in soup.select(".item-product"):
-            try:
-                title = item.select_one(".title").text.strip()
-                price_text = item.select_one(".price").text.strip().replace("₽", "").replace(" ", "")
-                price = int(price_text)
-                if price < 300:
-                    continue
-                image = item.select_one("img")["src"]
-                if not image:
-                    continue
-                description = item.select_one(".description")
-                desc = description.text.strip() if description else generate_description(title)
-                link = item.select_one("a")["href"]
-                full_link = f"https://mytoy66.ru{link}"
+        r = requests.get(MAIN_URL, timeout=10)
+        if r.status_code == 200 and 'products' in r.json():
+            return r.json()['products']
+    except:
+        pass
+    try:
+        r = requests.get(RESERVE_URL, timeout=10)
+        if r.status_code == 200 and '<offer>' in r.text:
+            return parse_yml(r.text)
+    except:
+        pass
+    return []
 
-                products_cache.append({
-                    "title": title,
-                    "price": price,
-                    "description": desc,
-                    "photo": image,
-                    "link": full_link
-                })
-            except Exception as e:
+def parse_yml(yml):
+    from xml.etree import ElementTree
+    root = ElementTree.fromstring(yml)
+    offers = []
+    for offer in root.findall(".//offer"):
+        name = offer.findtext("name")
+        price = offer.findtext("price")
+        pic = offer.findtext("picture")
+        desc = offer.findtext("description") or ""
+        if name and pic and float(price or 0) >= 300:
+            offers.append({
+                'name': name.strip(),
+                'price': price.strip(),
+                'image': pic.strip(),
+                'description': desc.strip()
+            })
+    return offers
+
+# --- ГЕНЕРАЦИЯ ОПИСАНИЯ ---
+def generate_description(product):
+    if product.get('description'):
+        return product['description']
+    return f"{product['name']} по суперцене {product['price']} ₽. Успей купить!"
+
+# --- ПУБЛИКАЦИЯ ТОВАРА ---
+def post_product(bot: Bot):
+    global product_cache
+    if not product_cache:
+        product_cache = fetch_products()
+        random.shuffle(product_cache)
+
+    while product_cache:
+        product = product_cache.pop()
+        if product.get('image') and float(product.get('price', 0)) >= 300:
+            uid = product['name'] + product['image']
+            if uid in last_posted:
                 continue
-    except Exception as e:
-        logging.error(f"Ошибка при загрузке товаров: {e}")
+            last_posted.add(uid)
+            text = f"<b>{product['name']}</b>\nЦена: {product['price']} ₽\n\n{generate_description(product)}"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=product['image'])]])
+            bot.send_photo(chat_id=CHANNEL_ID, photo=product['image'], caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            logger.info(f"Posted: {product['name']}")
+            break
 
-# === Команды ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Бот активен. Используйте /next, /pause, /resume, /status, /log.")
+# --- КОМАНДЫ АДМИНА ---
+def is_admin(user_id): return user_id == ADMIN_ID
 
-async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await post_next_product(context)
+def start(update: Update, context: CallbackContext): update.message.reply_text("Бот работает.")
+def status(update: Update, context: CallbackContext): update.message.reply_text("Пауза: " + str(pause))
+def pause_cmd(update: Update, context: CallbackContext):
+    global pause
+    if is_admin(update.effective_user.id):
+        pause = True
+        update.message.reply_text("Пауза включена.")
 
-async def pause_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global posting_paused
-    if update.effective_user.id != ADMIN_ID:
-        return
-    posting_paused = True
-    await update.message.reply_text("Публикация приостановлена.")
+def resume(update: Update, context: CallbackContext):
+    global pause
+    if is_admin(update.effective_user.id):
+        pause = False
+        update.message.reply_text("Пауза отключена.")
 
-async def resume_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global posting_paused
-    if update.effective_user.id != ADMIN_ID:
-        return
-    posting_paused = False
-    await update.message.reply_text("Публикация возобновлена.")
+def next_post(update: Update, context: CallbackContext):
+    if is_admin(update.effective_user.id):
+        post_product(context.bot)
+        update.message.reply_text("Опубликовано.")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    status_text = "приостановлена" if posting_paused else "активна"
-    await update.message.reply_text(f"Публикация {status_text}. Текущий товар: {current_product_index + 1}/{len(products_cache)}")
+def log(update: Update, context: CallbackContext):
+    if is_admin(update.effective_user.id):
+        update.message.reply_text(f"Кэш: {len(product_cache)} | Последние: {len(last_posted)}")
 
-async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Лог пуст.")
+# --- ЕЖЕДНЕВНЫЙ ПОСТИНГ ---
+def scheduler(context: CallbackContext):
+    if not pause:
+        post_product(context.bot)
 
-# === Публикация ===
-async def post_next_product(context: ContextTypes.DEFAULT_TYPE):
-    global current_product_index
-    if posting_paused or not products_cache:
-        return
+# --- ОСНОВНОЙ ЗАПУСК ---
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-    if current_product_index >= len(products_cache):
-        current_product_index = 0
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("status", status))
+    dp.add_handler(CommandHandler("pause", pause_cmd))
+    dp.add_handler(CommandHandler("resume", resume))
+    dp.add_handler(CommandHandler("next", next_post))
+    dp.add_handler(CommandHandler("log", log))
 
-    product = products_cache[current_product_index]
-    current_product_index += 1
+    job_queue = updater.job_queue
+    job_queue.run_daily(scheduler, time=time(hour=POST_HOUR, minute=POST_MINUTE))
 
-    message = f"<b>{product['title']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
-    keyboard = [[InlineKeyboardButton("Купить", url=product["link"])]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    updater.start_polling()
+    updater.idle()
 
-    await context.bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=product['photo'],
-        caption=message,
-        reply_markup=reply_markup,
-        parse_mode='HTML'
-    )
-
-# === Планировщик ===
-async def daily_post(context: ContextTypes.DEFAULT_TYPE):
-    load_products()
-    await post_next_product(context)
-
-# === Основной запуск ===
-async def main():
-    load_products()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("next", next_post))
-    application.add_handler(CommandHandler("pause", pause_posting))
-    application.add_handler(CommandHandler("resume", resume_posting))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("log", log))
-
-    application.job_queue.run_daily(daily_post, time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
-
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    await application.updater.idle()
-
-# === Запуск ===
-if __name__ == '__main__':
-    keep_alive()
-    asyncio.run(main())
+if __name__ == "__main__":
+    main()
