@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import requests
@@ -156,9 +157,8 @@ async def main():
     await app.run_polling()
     import asyncio
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
+if __name__ == "__main__": 
+    
     except RuntimeError as e:
         if str(e).startswith("Cannot close a running event loop"):
             loop = asyncio.get_event_loop()
