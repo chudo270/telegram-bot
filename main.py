@@ -22,7 +22,14 @@ DATA_URL = os.getenv("DATA_URL")
 MIN_PRICE = int(os.getenv("MIN_PRICE", "300"))
 
 # Инициализация
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher(storage=MemoryStorage())
 
 # Внутренняя память
