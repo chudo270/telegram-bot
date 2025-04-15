@@ -165,5 +165,8 @@ if __name__ == "__main__":
             loop = asyncio.get_event_loop()
             loop.create_task(main())
             loop.run_forever()
+        elif str(e).startswith("This event loop is already running"):
+            # Поддержка платформ вроде Jupyter или Railway
+            asyncio.get_event_loop().create_task(main())
         else:
             raise
