@@ -1,151 +1,160 @@
-import os
-import asyncio
 import logging
-import aiohttp
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import os
+import requests
+import xml.etree.ElementTree as ET
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    filters
+    filters,
 )
 
-# Конфигурация
-TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = "@mytoy66"
-ADMIN_ID = 487591931
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    filename='bot_log.txt'
+)
+logger = logging.getLogger(__name__)
 
+# Настройки
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0")
+ADMIN_ID = 487591931
+CHANNEL_ID = "@myttoy66"
 YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
-# Глобальные переменные
-awaiting_broadcast = False
-paused = False
-products_cache = []
-product_index = 0
+keyboard = [
+    [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
+    [InlineKeyboardButton("⏸ Пауза", callback_data="pause"), InlineKeyboardButton("✅ Возобновить", callback_data="resume")],
+    [InlineKeyboardButton("📋 Очередь постов", callback_data="queue")],
+    [InlineKeyboardButton("📨 Написать сообщение", callback_data="broadcast")],
+    [InlineKeyboardButton("📄 Лог", callback_data="log")],
+]
+menu = InlineKeyboardMarkup(keyboard)
 
-# Логирование
-logging.basicConfig(
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    filename="bot.log",
-    filemode="a"
-)
-
-# Загрузка товаров
-async def fetch_products():
-    global products_cache
+def fetch_products_from_yml():
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(YML_URL) as response:
-                text = await response.text()
-                # Пока пример одного товара, здесь парсинг YML при необходимости
-                products_cache = [{"name": "Пример", "price": 500, "description": "Описание товара", "picture": "https://via.placeholder.com/300"}]
-                logging.info("Загружено товаров: %d", len(products_cache))
+        response = requests.get(YML_URL)
+        response.raise_for_status()
+        tree = ET.fromstring(response.content)
+
+        products = []
+        for offer in tree.findall(".//offer"):
+            name = offer.findtext("name")
+            price = offer.findtext("price")
+            picture = offer.findtext("picture")
+            description = offer.findtext("description") or ""
+
+            if not picture or not price or float(price) < 300:
+                continue
+
+            products.append({
+                "name": name,
+                "price": float(price),
+                "picture": picture,
+                "description": description
+            })
+
+        return products
+
     except Exception as e:
-        logging.error("Ошибка загрузки товаров: %s", str(e))
-        products_cache = []
+        logger.error(f"Ошибка загрузки YML: {e}")
+        return []
 
-# Отправка товара
-async def send_product(context: ContextTypes.DEFAULT_TYPE, product: dict):
-    try:
-        message = f"<b>{product['name']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
-        await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=product['picture'],
-            caption=message,
-            parse_mode="HTML"
-        )
-        logging.info("Отправлен товар: %s", product['name'])
-    except Exception as e:
-        logging.error("Ошибка при отправке товара: %s", str(e))
+async def send_product(context: ContextTypes.DEFAULT_TYPE):
+    queue = context.bot_data.get("queue", [])
+    index = context.bot_data.get("queue_index", 0)
 
-# Публикация следующего товара
-async def post_product(context: ContextTypes.DEFAULT_TYPE = None):
-    global product_index, paused
-
-    if paused or not products_cache:
-        logging.info("Публикация приостановлена или нет товаров.")
+    if not queue:
+        await context.bot.send_message(chat_id=ADMIN_ID, text="Очередь пуста.")
         return
 
-    if product_index >= len(products_cache):
-        product_index = 0
+    if index >= len(queue):
+        await context.bot.send_message(chat_id=ADMIN_ID, text="Больше нет товаров в очереди.")
+        return
 
-    product = products_cache[product_index]
-    await send_product(context, product)
-    product_index += 1
+    product = queue[index]
+    caption = f"<b>{product['name']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
+    await context.bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=product['picture'],
+        caption=caption,
+        parse_mode='HTML'
+    )
 
-# Команды Telegram
+    context.bot_data["queue_index"] = index + 1
+    logger.info(f"Опубликован товар: {product['name']}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+    await update.message.reply_text("Панель управления ботом", reply_markup=menu)
 
-    keyboard = [
-        [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
-        [InlineKeyboardButton("⏸ Пауза", callback_data="pause"), InlineKeyboardButton("✅ Возобновить", callback_data="resume")],
-        [InlineKeyboardButton("📋 Очередь постов", callback_data="queue")],
-        [InlineKeyboardButton("📨 Написать сообщение", callback_data="broadcast")],
-        [InlineKeyboardButton("📄 Лог", callback_data="log")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Меню управления:", reply_markup=reply_markup)
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global awaiting_broadcast, paused
-
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
-    text = update.message.text
+    query = update.callback_query
+    await query.answer()
 
-    if text == "📨 Написать сообщение":
-        awaiting_broadcast = True
-        await update.message.reply_text("Введите сообщение для канала.")
-    elif text == "📋 Очередь постов":
-        await update.message.reply_text(f"Осталось товаров: {len(products_cache) - product_index}")
-    elif text == "▶️ Следующий пост":
-        await post_product(context)
-    elif text == "⏸ Пауза":
-        paused = True
-        await update.message.reply_text("Публикации приостановлены.")
-    elif text == "✅ Возобновить":
-        paused = False
-        await update.message.reply_text("Публикации возобновлены.")
-    elif text == "📄 Лог":
-        if os.path.exists("bot.log"):
-            with open("bot.log", "rb") as f:
-                await context.bot.send_document(chat_id=ADMIN_ID, document=f, filename="bot.log")
+    if query.data == "next":
+        await send_product(context)
+        await query.edit_message_text("Следующий товар отправлен.", reply_markup=menu)
+
+    elif query.data == "pause":
+        context.bot_data["paused"] = True
+        await query.edit_message_text("Публикации приостановлены.", reply_markup=menu)
+
+    elif query.data == "resume":
+        context.bot_data["paused"] = False
+        await query.edit_message_text("Публикации возобновлены.", reply_markup=menu)
+
+    elif query.data == "queue":
+        queue = context.bot_data.get("queue", [])
+        current = context.bot_data.get("queue_index", 0)
+        total = len(queue)
+        await query.edit_message_text(f"Товаров в очереди: {total - current} из {total}", reply_markup=menu)
+
+    elif query.data == "log":
+        if os.path.exists("bot_log.txt"):
+            with open("bot_log.txt", "r", encoding="utf-8") as f:
+                log_content = f.read()[-4000:]
+            await query.edit_message_text(f"Лог:\n\n{log_content}", reply_markup=menu)
         else:
-            await update.message.reply_text("Файл лога не найден.")
-    elif awaiting_broadcast:
-        awaiting_broadcast = False
+            await query.edit_message_text("Файл логов не найден.", reply_markup=menu)
+
+    elif query.data == "broadcast":
+        context.user_data["awaiting_broadcast"] = True
+        await query.edit_message_text("Напишите сообщение, которое хотите разослать.", reply_markup=menu)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if context.user_data.get("awaiting_broadcast"):
+        text = update.message.text
+        context.user_data["awaiting_broadcast"] = False
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        await update.message.reply_text("Сообщение отправлено.")
-    else:
-        await update.message.reply_text("Неизвестная команда.")
+        await update.message.reply_text("Сообщение отправлено в канал.")
 
-# Плановая отправка
-async def schedule_daily_post():
-    await post_product()
-
-# Главная функция
 async def main():
-    await fetch_products()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    # Загрузка очереди
+    products = fetch_products_from_yml()
+    app.bot_data["queue"] = products
+    app.bot_data["queue_index"] = 0
+    app.bot_data["paused"] = False
 
-    # Планировщик
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(schedule_daily_post, "cron", hour=12, minute=0)
-    scheduler.add_job(post_product, "interval", minutes=60)
-    scheduler.start()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    await application.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
+    import asyncio
     asyncio.run(main())
