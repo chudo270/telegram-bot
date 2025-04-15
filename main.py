@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import aiohttp
-from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
