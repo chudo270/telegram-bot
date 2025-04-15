@@ -67,22 +67,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Бот запущен.", reply_markup=get_keyboard())
 
-async def post_product(context: ContextTypes.DEFAULT_TYPE):
-    global product_queue
-    if paused or not product_queue:
-        return
-    product = product_queue.pop(0)
-    caption = f"<b>{product['name']}</b>\n"
-    if product['description']:
-        caption += f"{product['description']}\n"
-    caption += f"<b>Цена:</b> {product['price']} ₽\n"
-    caption += f'<a href="{product["url"]}">Посмотреть на сайте</a>'
-    await context.bot.send_photo(
-        chat_id=CHANNEL_ID,
-        photo=product['picture'],
-        caption=caption,
-        parse_mode="HTML"
-    )
+async def post_product(context=None):
+    try:
+        if not product_queue:
+            await fetch_products()
+
+        if product_queue:
+            product = product_queue.pop(0)
+            await send_product(product)
+        else:
+            await bot.send_message(ADMIN_ID, "Очередь пуста, товаров нет для публикации.")
+    except Exception as e:
+        await bot.send_message(ADMIN_ID, f"Ошибка при публикации товара: {e}")
+
 
 async def schedule_daily_post():
     xml = await fetch_url(YML_URL)
