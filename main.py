@@ -161,12 +161,25 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except RuntimeError as e:
-        if str(e).startswith("Cannot close a running event loop"):
-            loop = asyncio.get_event_loop()
+        if str(e).startswith("This event loop is already running"):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
             loop.create_task(main())
             loop.run_forever()
-        elif str(e).startswith("This event loop is already running"):
-            # Поддержка платформ вроде Jupyter или Railway
-            asyncio.get_event_loop().create_task(main())
+        elif str(e).startswith("Cannot close a running event loop"):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.create_task(main())
+            loop.run_forever()
+        elif str(e).startswith("There is no current event loop in thread"):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main())
         else:
             raise
