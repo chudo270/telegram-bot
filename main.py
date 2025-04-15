@@ -171,30 +171,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Неизвестная команда.")
 
-# --- Запуск бота ---
+import asyncio
+from telegram.ext import Application, CommandHandler
+from config import BOT_TOKEN
 
-async def main():
+# (если у тебя есть свои функции, оставь импорты)
+from your_bot_module import fetch_products, start, other_handlers  # замени на свои
+
+async def run_bot():
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Загружаем товары (если нужно)
     await fetch_products()
-    application = Application.builder().token(TOKEN).build()
 
+    # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    # Добавь свои другие обработчики, если есть
+    # application.add_handler(...)
 
-    scheduler.add_job(schedule_daily_post, "cron", hour=12, minute=0)
-    scheduler.add_job(post_product, "interval", minutes=60)
-    scheduler.start()
-
-    await schedule_daily_post()
+    # Запуск бота
+    await application.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    from telegram.ext import Application
-
-    async def run_bot():
-        await fetch_products()  # загружаем товары перед стартом
-        await application.run_polling()
-
     asyncio.run(run_bot())
+
 
     nest_asyncio.apply()  # <-- Позволяет запускать loop повторно
     loop = asyncio.get_event_loop()
