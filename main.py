@@ -12,9 +12,6 @@ from telegram.ext import (
     filters
 )
 
-# Загрузка токена из .env
-load_dotenv()
-
 # Конфигурация
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = "@mytoy66"
