@@ -5,3 +5,5 @@ lxml
 nest_asyncio
 feedparser
 beautifulsoup4
+aiohttp
+
