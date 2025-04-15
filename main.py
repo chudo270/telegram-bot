@@ -2,11 +2,11 @@ import logging
 import requests
 import random
 import time
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
-from telegram import Update
-
+import asyncio
+import datetime
 
 # --- НАСТРОЙКИ ---
 TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
@@ -36,104 +36,78 @@ def fetch_products():
         pass
     try:
         r = requests.get(RESERVE_URL, timeout=10)
-        if r.status_code == 200 and '<offer>' in r.text:
-            return parse_yml(r.text)
+        if r.status_code == 200 and 'products' in r.json():
+            return r.json()['products']
     except:
         pass
     return []
 
-def parse_yml(yml):
-    from xml.etree import ElementTree
-    root = ElementTree.fromstring(yml)
-    offers = []
-    for offer in root.findall(".//offer"):
-        name = offer.findtext("name")
-        price = offer.findtext("price")
-        pic = offer.findtext("picture")
-        desc = offer.findtext("description") or ""
-        if name and pic and float(price or 0) >= 300:
-            offers.append({
-                'name': name.strip(),
-                'price': price.strip(),
-                'image': pic.strip(),
-                'description': desc.strip()
-            })
-    return offers
+# --- ПОСТИНГ ---
+async def post_product(application):
+    global product_cache, last_posted
+    while True:
+        now = datetime.datetime.now()
+        if now.hour == POST_HOUR and now.minute == POST_MINUTE and not pause:
+            if not product_cache:
+                product_cache = fetch_products()
 
-# --- ГЕНЕРАЦИЯ ОПИСАНИЯ ---
-def generate_description(product):
-    if product.get('description'):
-        return product['description']
-    return f"{product['name']} по суперцене {product['price']} ₽. Успей купить!"
+            for product in product_cache:
+                if product['id'] in last_posted:
+                    continue
+                if product.get('price', 0) < 300 or not product.get('images') or not product.get('name'):
+                    continue
 
-# --- ПУБЛИКАЦИЯ ТОВАРА ---
-def post_product(bot: Bot):
-    global product_cache
-    if not product_cache:
-        product_cache = fetch_products()
-        random.shuffle(product_cache)
+                desc = product.get('description') or f"{product['name']}\nЦена: {product['price']}₽"
+                image_url = product['images'][0]
+                caption = f"<b>{product['name']}</b>\n{desc}\n\nЦена: {product['price']}₽"
 
-    while product_cache:
-        product = product_cache.pop()
-        if product.get('image') and float(product.get('price', 0)) >= 300:
-            uid = product['name'] + product['image']
-            if uid in last_posted:
-                continue
-            last_posted.add(uid)
-            text = f"<b>{product['name']}</b>\nЦена: {product['price']} ₽\n\n{generate_description(product)}"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=product['image'])]])
-            bot.send_photo(chat_id=CHANNEL_ID, photo=product['image'], caption=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            logger.info(f"Posted: {product['name']}")
-            break
+                await application.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=image_url,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
+                last_posted.add(product['id'])
+                break
+        await asyncio.sleep(60)
 
-# --- КОМАНДЫ АДМИНА ---
-def is_admin(user_id): return user_id == ADMIN_ID
+# --- КОМАНДЫ ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Бот работает. Используй /pause, /resume, /next, /status, /log")
 
-def start(update: Update, context: CallbackContext): update.message.reply_text("Бот работает.")
-def status(update: Update, context: CallbackContext): update.message.reply_text("Пауза: " + str(pause))
-def pause_cmd(update: Update, context: CallbackContext):
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pause
-    if is_admin(update.effective_user.id):
+    if update.effective_user.id == ADMIN_ID:
         pause = True
-        update.message.reply_text("Пауза включена.")
+        await update.message.reply_text("Пауза включена")
 
-def resume(update: Update, context: CallbackContext):
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pause
-    if is_admin(update.effective_user.id):
+    if update.effective_user.id == ADMIN_ID:
         pause = False
-        update.message.reply_text("Пауза отключена.")
+        await update.message.reply_text("Пауза снята")
 
-def next_post(update: Update, context: CallbackContext):
-    if is_admin(update.effective_user.id):
-        post_product(context.bot)
-        update.message.reply_text("Опубликовано.")
+async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        global product_cache
+        if not product_cache:
+            product_cache = fetch_products()
+        await post_product(context.application)
 
-def log(update: Update, context: CallbackContext):
-    if is_admin(update.effective_user.id):
-        update.message.reply_text(f"Кэш: {len(product_cache)} | Последние: {len(last_posted)}")
+# --- ЗАПУСК ---
+async def main():
+    application = ApplicationBuilder().token(TOKEN).build()
 
-# --- ЕЖЕДНЕВНЫЙ ПОСТИНГ ---
-def scheduler(context: CallbackContext):
-    if not pause:
-        post_product(context.bot)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("pause", pause_command))
+    application.add_handler(CommandHandler("resume", resume_command))
+    application.add_handler(CommandHandler("next", next_command))
 
-# --- ОСНОВНОЙ ЗАПУСК ---
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    # Запускаем фоновую задачу
+    application.job_queue.run_repeating(lambda ctx: asyncio.create_task(post_product(application)), interval=60)
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("status", status))
-    dp.add_handler(CommandHandler("pause", pause_cmd))
-    dp.add_handler(CommandHandler("resume", resume))
-    dp.add_handler(CommandHandler("next", next_post))
-    dp.add_handler(CommandHandler("log", log))
+    await application.run_polling()
 
-    job_queue = updater.job_queue
-    job_queue.run_daily(scheduler, time=time(hour=POST_HOUR, minute=POST_MINUTE))
-
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    asyncio.run(main())
