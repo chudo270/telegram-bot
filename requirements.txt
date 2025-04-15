@@ -2,3 +2,4 @@ python-telegram-bot==20.8
 requests
 apscheduler==3.10.4
 lxml
+nest_asyncio
