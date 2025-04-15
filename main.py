@@ -1,152 +1,179 @@
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
 import logging
-import xml.etree.ElementTree as ET
-import aiohttp
+import asyncio
+import json
+import requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import time
+from datetime import datetime
+import os
 
-# Настройки
 TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
 ADMIN_ID = 487591931
 CHANNEL_ID = "@myttoy66"
-WEBHOOK_PATH = "/webhook/myttoy66"
-WEBHOOK_URL = f"https://worker-production-c8d5.up.railway.app{WEBHOOK_PATH}"
+POST_TIME = "12:00"
+MAIN_SOURCE = "https://mytoy66.ru/group?type=latest"
+RESERVE_SOURCE = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
-# Очередь товаров
-queue = []
-is_paused = False
+application = Application.builder().token(TOKEN).build()
+scheduler = AsyncIOScheduler()
 
-# Логгирование
-logging.basicConfig(level=logging.INFO)
+paused = False
+last_posted = set()
 
-# Генерация кнопок
-def get_main_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
-        [InlineKeyboardButton("⏸ Пауза", callback_data="pause")],
-        [InlineKeyboardButton("▶ Продолжить", callback_data="resume")],
-        [InlineKeyboardButton("📋 Статус", callback_data="status")],
-        [InlineKeyboardButton("✍ Написать", callback_data="write")],
-        [InlineKeyboardButton("🧾 Логи", callback_data="log")]
-    ])
 
-# Команды
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Панель управления:", reply_markup=get_main_keyboard())
+def get_products_from_main():
+    try:
+        response = requests.get(MAIN_SOURCE)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("products", [])
+    except Exception as e:
+        logging.error(f"Ошибка при получении с основного источника: {e}")
+        return []
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_paused
-    query = update.callback_query
-    await query.answer()
-    data = query.data
 
+def get_products_from_reserve():
+    try:
+        response = requests.get(RESERVE_SOURCE)
+        response.raise_for_status()
+        from xml.etree import ElementTree as ET
+        tree = ET.fromstring(response.content)
+        products = []
+        for offer in tree.findall(".//offer"):
+            product = {
+                "name": offer.findtext("name"),
+                "price": float(offer.findtext("price", "0")),
+                "description": offer.findtext("description", ""),
+                "picture": offer.findtext("picture"),
+                "url": offer.findtext("url"),
+            }
+            products.append(product)
+        return products
+    except Exception as e:
+        logging.error(f"Ошибка при разборе YML: {e}")
+        return []
+
+
+def generate_description(product):
+    if product.get("description"):
+        return product["description"]
+    return f"{product['name']} — отличный товар по выгодной цене!"
+
+
+async def post_product():
+    global paused, last_posted
+    if paused:
+        logging.info("Публикация приостановлена.")
+        return
+
+    products = get_products_from_main()
+    if not products:
+        products = get_products_from_reserve()
+
+    for product in products:
+        if isinstance(product, dict):
+            name = product.get("name", "")
+            price = float(product.get("price", 0))
+            photo = product.get("image") or product.get("picture")
+            desc = generate_description(product)
+            link = product.get("url", "")
+
+            if not name or not photo or price < 300 or name in last_posted:
+                continue
+
+            caption = f"<b>{name}</b>\n\n{desc}\n\nЦена: {price}₽"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=link)]]) if link else None
+
+            try:
+                await application.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+                last_posted.add(name)
+                logging.info(f"Опубликован товар: {name}")
+                return
+            except Exception as e:
+                logging.error(f"Ошибка при отправке товара: {e}")
+
+    logging.info("Нет подходящих товаров для публикации.")
+
+
+# Команды управления
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await query.edit_message_text("Доступ запрещён")
         return
+    await update.message.reply_text("Бот запущен. Используй /next, /pause, /resume, /status, /log")
 
-    if data == "next":
-        await post_next_item(context)
-    elif data == "pause":
-        is_paused = True
-        await query.edit_message_text("Публикация приостановлена", reply_markup=get_main_keyboard())
-    elif data == "resume":
-        is_paused = False
-        await query.edit_message_text("Публикация возобновлена", reply_markup=get_main_keyboard())
-    elif data == "status":
-        status = "Пауза" if is_paused else "Активен"
-        await query.edit_message_text(f"Текущий статус: {status}\nОсталось товаров: {len(queue)}", reply_markup=get_main_keyboard())
-    elif data == "log":
-        await query.edit_message_text("Лог пока не реализован", reply_markup=get_main_keyboard())
-    elif data == "write":
-        context.user_data["awaiting_ad"] = True
-        await query.edit_message_text("Напишите текст, который нужно отправить в канал.", reply_markup=get_main_keyboard())
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    if context.user_data.get("awaiting_ad"):
-        text = update.message.text
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        context.user_data["awaiting_ad"] = False
-        await update.message.reply_text("Отправлено!", reply_markup=get_main_keyboard())
+    await post_product()
+    await update.message.reply_text("Следующий товар опубликован.")
 
-# Загрузка из YML
-async def get_products():
-    YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
-    products = []
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(YML_URL) as resp:
-            text = await resp.text()
-
-    root = ET.fromstring(text)
-    for offer in root.findall(".//offer"):
-        name = offer.findtext("name")
-        price = float(offer.findtext("price", "0"))
-        description = offer.findtext("description", "")
-        image = offer.findtext("picture")
-        url = offer.findtext("url")
-
-        # Фильтрация
-        if not image or price < 300:
-            continue
-
-        # Генерация описания при отсутствии
-        if not description:
-            description = f"Подробности: {name}"
-
-        products.append({
-            "name": name,
-            "price": price,
-            "description": description,
-            "image": image,
-            "link": url
-        })
-
-    return products
-
-# Загрузка товаров
-async def load_products():
-    global queue
-    queue = await get_products()
-    logging.info(f"Загружено товаров: {len(queue)}")
-
-# Публикация
-async def post_next_item(context: ContextTypes.DEFAULT_TYPE):
-    global queue
-    if is_paused or not queue:
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id != ADMIN_ID:
         return
-    item = queue.pop(0)
-    text = f"<b>{item['name']}</b>\n{item['price']} ₽\n\n{item['description']}"
-    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=item["link"])]])
-    await context.bot.send_photo(chat_id=CHANNEL_ID, photo=item["image"], caption=text, parse_mode="HTML", reply_markup=buttons)
+    paused = True
+    await update.message.reply_text("Автопостинг приостановлен.")
 
-# Планировщик
-def schedule_posts(app: Application):
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(lambda: app.create_task(post_next_item(app.bot)), trigger='cron', hour=12, minute=0)
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id != ADMIN_ID:
+        return
+    paused = False
+    await update.message.reply_text("Автопостинг возобновлён.")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    status = "приостановлен" if paused else "активен"
+    await update.message.reply_text(f"Состояние автопостинга: {status}")
+
+
+async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(f"Последние опубликованные товары:\n" + "\n".join(last_posted) if last_posted else "Пока ничего не опубликовано.")
+
+
+def schedule_posts():
+    hour, minute = map(int, POST_TIME.split(":"))
+    scheduler.add_job(post_product, 'cron', hour=hour, minute=minute)
     scheduler.start()
 
-# Webhook запуск
-async def post_init(application):
-    await load_products()
-    schedule_posts(application)
-    await application.bot.set_webhook(WEBHOOK_URL)
 
-app = Application.builder().token(TOKEN).post_init(post_init).build()
+def set_commands():
+    commands = [
+        BotCommand("start", "Запустить бота"),
+        BotCommand("next", "Опубликовать следующий товар"),
+        BotCommand("pause", "Приостановить автопостинг"),
+        BotCommand("resume", "Возобновить автопостинг"),
+        BotCommand("status", "Проверить статус"),
+        BotCommand("log", "Показать лог публикаций"),
+    ]
+    asyncio.run(application.bot.set_my_commands(commands))
 
-app.run_webhook(
-    listen="0.0.0.0",
-    port=8080,
-    webhook_url=WEBHOOK_URL,
-)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("next", next_command))
+    application.add_handler(CommandHandler("pause", pause_command))
+    application.add_handler(CommandHandler("resume", resume_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("log", log_command))
+
+    schedule_posts()
+    set_commands()
+
+    application.run_polling()
