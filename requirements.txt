@@ -4,3 +4,4 @@ apscheduler==3.10.4
 lxml
 nest_asyncio
 feedparser
+beautifulsoup4
