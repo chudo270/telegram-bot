@@ -1,32 +1,97 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+import datetime
 import asyncio
+import requests
+import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler,
+    filters, CallbackQueryHandler
+)
 
-# Конфигурация
 BOT_TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
 ADMIN_ID = 487591931
 
-# Включение логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# Глобальные переменные
 posting_paused = False
 current_product_index = 0
-products_cache = [
-    {'title': 'Товар 1', 'price': 350, 'description': 'Описание товара 1', 'photo': 'https://example.com/img1.jpg'},
-    {'title': 'Товар 2', 'price': 500, 'description': 'Описание товара 2', 'photo': 'https://example.com/img2.jpg'}
-    # Здесь можно подключить реальный источник данных
-]
+products_cache = []
 
-# Команды администратора
+# --- Парсинг сайта ---
+def parse_site_products():
+    try:
+        response = requests.get("https://mytoy66.ru/group?type=latest", timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        items = soup.select(".item-product")
+
+        products = []
+        for item in items:
+            title = item.select_one(".product-title").get_text(strip=True)
+            price = int(item.select_one(".price").get_text(strip=True).replace("₽", "").replace(" ", ""))
+            photo = item.select_one("img")["src"]
+            link = item.select_one("a")["href"]
+            description = item.select_one(".product-description")
+            description_text = description.get_text(strip=True) if description else None
+
+            if price >= 300 and photo:
+                if not description_text:
+                    description_text = generate_description(title, photo)
+                products.append({
+                    "title": title,
+                    "price": price,
+                    "description": description_text,
+                    "photo": photo,
+                    "link": f"https://mytoy66.ru{link}"
+                })
+        return products
+    except Exception as e:
+        logging.error(f"Ошибка при парсинге сайта: {e}")
+        return []
+
+# --- Парсинг YML ---
+def parse_yml_products():
+    try:
+        response = requests.get("https://mytoy66.ru/integration?int=avito&name=avitoo", timeout=10)
+        root = ET.fromstring(response.content)
+        products = []
+
+        for offer in root.findall(".//offer"):
+            price = int(offer.find("price").text)
+            picture = offer.find("picture").text if offer.find("picture") is not None else ""
+            title = offer.find("name").text
+            description = offer.find("description").text if offer.find("description") is not None else ""
+            link = offer.get("url")
+
+            if price >= 300 and picture:
+                if not description:
+                    description = generate_description(title, picture)
+                products.append({
+                    "title": title,
+                    "price": price,
+                    "description": description,
+                    "photo": picture,
+                    "link": link
+                })
+        return products
+    except Exception as e:
+        logging.error(f"Ошибка при парсинге YML: {e}")
+        return []
+
+# --- Генерация описания ---
+def generate_description(title, image_url):
+    return f"Уникальный товар: {title}. Отличный выбор для вас! Подробности — по кнопке ниже."
+
+# --- Команды ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text("Бот запущен. Используйте /next, /pause, /resume, /status, /log.")
+    await update.message.reply_text("Бот готов к работе. /next /pause /resume /status /log")
 
 async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -51,17 +116,26 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     status = "приостановлена" if posting_paused else "активна"
-    await update.message.reply_text(f"Публикация сейчас {status}. Текущий индекс товара: {current_product_index}")
+    await update.message.reply_text(f"Публикация сейчас {status}. Индекс товара: {current_product_index}")
 
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text("Лог пуст (или подключите лог-файл).")
+    await update.message.reply_text("Лог пуст (или подключите файл лога).")
 
-# Функция публикации товара
+# --- Постинг товара ---
 async def post_next_product(context: ContextTypes.DEFAULT_TYPE):
-    global current_product_index
+    global current_product_index, products_cache
     if posting_paused:
+        return
+    if not products_cache:
+        products_cache = parse_site_products()
+        if not products_cache:
+            products_cache = parse_yml_products()
+        current_product_index = 0
+
+    if not products_cache:
+        await context.bot.send_message(chat_id=ADMIN_ID, text="Нет доступных товаров для публикации.")
         return
 
     if current_product_index >= len(products_cache):
@@ -70,23 +144,23 @@ async def post_next_product(context: ContextTypes.DEFAULT_TYPE):
     product = products_cache[current_product_index]
     current_product_index += 1
 
-    message = f"<b>{product['title']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
-    keyboard = [[InlineKeyboardButton("Купить", url="https://example.com")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = f"<b>{product['title']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
+    button = [[InlineKeyboardButton("Купить", url=product["link"])]]
+    reply_markup = InlineKeyboardMarkup(button)
 
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
-        photo=product['photo'],
-        caption=message,
-        reply_markup=reply_markup,
-        parse_mode='HTML'
+        photo=product["photo"],
+        caption=text,
+        parse_mode="HTML",
+        reply_markup=reply_markup
     )
 
-# Планировщик ежедневной публикации
+# --- Планировщик ---
 async def daily_post(context: ContextTypes.DEFAULT_TYPE):
     await post_next_product(context)
 
-# Основной запуск
+# --- Запуск ---
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -97,8 +171,10 @@ async def main():
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("log", log))
 
-    # Планируем ежедневную публикацию в 12:00 МСК
-    application.job_queue.run_daily(daily_post, time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
+    application.job_queue.run_daily(
+        daily_post,
+        time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone(datetime.timedelta(hours=3)))  # МСК
+    )
 
     await application.initialize()
     await application.start()
@@ -106,5 +182,4 @@ async def main():
     await application.updater.idle()
 
 if __name__ == '__main__':
-    import datetime
     asyncio.run(main())
