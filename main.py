@@ -1,127 +1,139 @@
-import asyncio
+import os
 import logging
 import requests
 from bs4 import BeautifulSoup
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    CallbackQueryHandler, MessageHandler, filters
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# Настройки
 TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
-CHANNEL_ID = "@myttoy66"
 ADMIN_ID = 487591931
+CHANNEL_ID = "@myttoy66"
+MAIN_URL = "https://mytoy66.ru/group?type=latest"
+RESERVE_YML = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
+# Очередь товаров
+product_queue = []
+
+# Логгирование
 logging.basicConfig(level=logging.INFO)
-application = Application.builder().token(TOKEN).build()
+logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler()
-scheduler.start()
-
-write_mode_users = set()
-
-def get_products_from_site():
-    url = "https://mytoy66.ru/group?type=latest"
+# HTML-парсинг
+def fetch_products_from_html():
+    products = []
     try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        products = []
-        for product in soup.select(".product-item"):
-            title = product.select_one(".product-title a").text.strip()
-            price_tag = product.select_one(".price")
-            image_tag = product.select_one(".product-image img")
-            if not price_tag or not image_tag:
+        response = requests.get(MAIN_URL)
+        soup = BeautifulSoup(response.content, "html.parser")
+        items = soup.select(".product-wrapper")
+
+        for item in items:
+            name_tag = item.select_one(".product-name")
+            price_tag = item.select_one(".price")
+            img_tag = item.select_one("img")
+            link_tag = item.select_one("a")
+
+            if not name_tag or not price_tag or not img_tag:
                 continue
-            price_text = price_tag.text.replace("₽", "").replace(" ", "").strip()
-            price = int("".join(filter(str.isdigit, price_text)))
-            if price < 300:
-                continue
-            image = image_tag['src']
-            link = product.select_one(".product-title a")['href']
-            url_full = "https://mytoy66.ru" + link
-            products.append({
-                "title": title,
-                "price": price,
-                "image": image,
-                "url": url_full
-            })
-        return products
+
+            name = name_tag.get_text(strip=True)
+            price = int(''.join(filter(str.isdigit, price_tag.get_text())))
+            image = img_tag.get("src")
+            link = link_tag.get("href")
+
+            if price >= 300 and image:
+                products.append({
+                    "name": name,
+                    "price": price,
+                    "image": image,
+                    "link": f"https://mytoy66.ru{link}"
+                })
     except Exception as e:
-        logging.error(f"Ошибка парсинга: {e}")
-        return []
+        logger.error(f"Ошибка при парсинге HTML: {e}")
+    return products
 
-product_index = 0
+# Кнопки
+def get_main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("Следующий товар", callback_data='next')],
+        [InlineKeyboardButton("Пауза", callback_data='pause')],
+        [InlineKeyboardButton("Статус", callback_data='status')],
+        [InlineKeyboardButton("Лог", callback_data='log')],
+        [InlineKeyboardButton("Написать", callback_data='write')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-async def post_product(context: ContextTypes.DEFAULT_TYPE):
-    global product_index
-    products = get_products_from_site()
-    if not products:
-        await context.bot.send_message(chat_id=ADMIN_ID, text="Нет подходящих товаров.")
+# Команды
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Бот запущен", reply_markup=get_main_keyboard())
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    cmd = query.data
+
+    if query.from_user.id != ADMIN_ID:
+        await query.edit_message_text("Нет доступа")
         return
-    if product_index >= len(products):
-        product_index = 0
-    product = products[product_index]
-    caption = f"<b>{product['title']}</b>\nЦена: {product['price']}₽\n<a href='{product['url']}'>Подробнее</a>"
+
+    if cmd == "next":
+        await send_next_product(context)
+    elif cmd == "pause":
+        await query.edit_message_text("Пауза активирована")
+    elif cmd == "status":
+        await query.edit_message_text("Бот работает. Очередь товаров: " + str(len(product_queue)))
+    elif cmd == "log":
+        await query.edit_message_text("Логирование активно.")
+    elif cmd == "write":
+        context.user_data["writing"] = True
+        await query.edit_message_text("Введите текст, который хотите отправить в канал:")
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if context.user_data.get("writing"):
+        text = update.message.text
+        await context.bot.send_message(CHANNEL_ID, text)
+        await update.message.reply_text("Отправлено в канал.")
+        context.user_data["writing"] = False
+
+# Публикация товара
+async def send_next_product(context: ContextTypes.DEFAULT_TYPE):
+    global product_queue
+    if not product_queue:
+        product_queue = fetch_products_from_html()
+
+    if not product_queue:
+        await context.bot.send_message(ADMIN_ID, "Нет товаров для публикации.")
+        return
+
+    product = product_queue.pop(0)
+    text = f"<b>{product['name']}</b>\nЦена: {product['price']}₽\n<a href='{product['link']}'>Посмотреть товар</a>"
     await context.bot.send_photo(
         chat_id=CHANNEL_ID,
-        photo=product['image'],
-        caption=caption,
-        parse_mode='HTML'
+        photo=product["image"],
+        caption=text,
+        parse_mode="HTML"
     )
-    product_index += 1
 
-@application.command_handler("start")
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Следующий товар", callback_data="next")],
-        [InlineKeyboardButton("Пауза", callback_data="pause")],
-        [InlineKeyboardButton("Продолжить", callback_data="resume")],
-        [InlineKeyboardButton("Статус", callback_data="status")],
-        [InlineKeyboardButton("Лог", callback_data="log")],
-        [InlineKeyboardButton("Написать", callback_data="write_mode")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+# Планировщик
+scheduler = AsyncIOScheduler()
+scheduler.add_job(send_next_product, 'cron', hour=12, minute=0, args=[None])  # каждый день в 12:00
 
-@application.callback_query_handler(lambda query: query.data == "next")
-async def next_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await post_product(context)
-    await update.callback_query.answer("Отправлен следующий товар.")
+# Инициализация
+app = ApplicationBuilder().token(TOKEN).build()
 
-@application.callback_query_handler(lambda query: query.data == "pause")
-async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    scheduler.pause()
-    await update.callback_query.answer("Публикации приостановлены.")
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-@application.callback_query_handler(lambda query: query.data == "resume")
-async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    scheduler.resume()
-    await update.callback_query.answer("Публикации возобновлены.")
-
-@application.callback_query_handler(lambda query: query.data == "status")
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = "включен" if scheduler.running else "выключен"
-    await update.callback_query.answer(f"Автопостинг: {state}")
-
-@application.callback_query_handler(lambda query: query.data == "log")
-async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.message.reply_text("Логов пока нет.")
-
-@application.callback_query_handler(lambda query: query.data == "write_mode")
-async def enter_write_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.callback_query.from_user.id
-    write_mode_users.add(user_id)
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Вы вошли в режим написания. Всё, что вы напишете, будет опубликовано в канал.")
-
-@application.message_handler(filters.TEXT & ~filters.COMMAND)
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in write_mode_users:
-        text = update.message.text
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=f"[Реклама]\n{text}")
-        await update.message.reply_text("Сообщение отправлено в канал.")
-
-# Расписание: каждый день в 12:00 по МСК
-scheduler.add_job(lambda: application.create_task(post_product(None)), trigger='cron', hour=12, minute=0)
-
-if __name__ == '__main__':
-    application.run_polling()
+# Запуск
+if __name__ == "__main__":
+    product_queue = fetch_products_from_html()
+    scheduler.start()
+    app.run_polling()
