@@ -149,13 +149,14 @@ async def main():
     schedule_posts(app)
 
     # Установка Webhook
-    await app.bot.set_webhook(WEBHOOK_URL)
-    await app.run_webhook(
-        listen="0.0.0.0",
-        port=8080,
-        webhook_path=WEBHOOK_PATH,
-        url_path=WEBHOOK_PATH,
-    )
+await app.bot.set_webhook(WEBHOOK_URL)
+await app.run_webhook(
+    listen="0.0.0.0",
+    port=8080,
+    path=WEBHOOK_PATH,
+    webhook_url=WEBHOOK_URL,
+)
+
 
 if __name__ == "__main__":
     try:
