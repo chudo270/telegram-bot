@@ -1,116 +1,131 @@
-import nest_asyncio
-nest_asyncio.apply()
-
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
-from bs4 import BeautifulSoup
-import aiohttp
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+import logging
+import html_parser  # твой модуль парсинга с HTML
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import time
 
-TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
-CHANNEL_ID = '@mytoy66'
+# Настройки
+TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
 ADMIN_ID = 487591931
+CHANNEL_ID = "@myttoy66"
+WEBHOOK_PATH = "/webhook/myttoy66"
+WEBHOOK_URL = f"https://worker-production-c8d5.up.railway.app{WEBHOOK_PATH}"
 
-product_queue = []
-paused = False
-write_mode = {}
+# Очередь товаров
+queue = []
+is_paused = False
 
-URL = "https://mytoy66.ru/group?type=latest"
+# Логгирование
+logging.basicConfig(level=logging.INFO)
 
-async def fetch_products():
-    global product_queue
-    async with aiohttp.ClientSession() as session:
-        async with session.get(URL) as response:
-            html = await response.text()
-            soup = BeautifulSoup(html, 'html.parser')
-            items = soup.select('.product-item')
-            queue = []
-            for item in items:
-                title = item.select_one('.product-title')
-                img = item.select_one('img')
-                price = item.select_one('.price')
-                link = item.select_one('a')
-
-                if not (title and img and price and link):
-                    continue
-
-                queue.append({
-                    'name': title.get_text(strip=True),
-                    'image': img['src'],
-                    'price': price.get_text(strip=True),
-                    'url': 'https://mytoy66.ru' + link['href']
-                })
-            product_queue = queue
-
-def build_keyboard():
+# Генерация кнопок
+def get_main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
-        [InlineKeyboardButton("⏸ Пауза" if not paused else "▶️ Возобновить", callback_data="pause")],
-        [InlineKeyboardButton("✏️ Написать", callback_data="write")]
+        [InlineKeyboardButton("⏸ Пауза", callback_data="pause")],
+        [InlineKeyboardButton("▶ Продолжить", callback_data="resume")],
+        [InlineKeyboardButton("📋 Статус", callback_data="status")],
+        [InlineKeyboardButton("✍ Написать", callback_data="write")],
+        [InlineKeyboardButton("🧾 Логи", callback_data="log")]
     ])
 
-async def send_product(context: CallbackContext):
-    global product_queue
-    if paused or not product_queue:
-        return
-    product = product_queue.pop(0)
-    text = f"<b>{product['name']}</b>\nЦена: {product['price']}\n<a href='{product['url']}'>Смотреть товар</a>"
-    await context.bot.send_photo(
-        chat_id=CHANNEL_ID,
-        photo=product['image'],
-        caption=text,
-        parse_mode='HTML',
-        reply_markup=build_keyboard()
-    )
+# Команды
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Панель управления:", reply_markup=get_main_keyboard())
 
-async def start(update: Update, context: CallbackContext):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Бот запущен", reply_markup=build_keyboard())
-
-async def handle_callback(update: Update, context: CallbackContext):
-    global paused
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_paused
     query = update.callback_query
     await query.answer()
+    data = query.data
 
-    if query.from_user.id != ADMIN_ID:
-        await query.edit_message_reply_markup()
+    if update.effective_user.id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещён")
         return
 
-    if query.data == "next":
-        await send_product(context)
-    elif query.data == "pause":
-        paused = not paused
-        await query.edit_message_reply_markup(reply_markup=build_keyboard())
-    elif query.data == "write":
-        write_mode[query.from_user.id] = True
-        await query.message.reply_text("Введите текст, который хотите отправить в канал:")
+    if data == "next":
+        await post_next_item(context)
+    elif data == "pause":
+        is_paused = True
+        await query.edit_message_text("Публикация приостановлена", reply_markup=get_main_keyboard())
+    elif data == "resume":
+        is_paused = False
+        await query.edit_message_text("Публикация возобновлена", reply_markup=get_main_keyboard())
+    elif data == "status":
+        status = "Пауза" if is_paused else "Активен"
+        await query.edit_message_text(f"Текущий статус: {status}\nОсталось товаров: {len(queue)}", reply_markup=get_main_keyboard())
+    elif data == "log":
+        await query.edit_message_text("Лог пока не реализован", reply_markup=get_main_keyboard())
+    elif data == "write":
+        context.user_data["awaiting_ad"] = True
+        await query.edit_message_text("Напишите текст, который нужно отправить в канал.", reply_markup=get_main_keyboard())
 
-async def handle_message(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if write_mode.get(user_id):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if context.user_data.get("awaiting_ad"):
         text = update.message.text
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        write_mode[user_id] = False
-        await update.message.reply_text("Сообщение отправлено.")
-    else:
-        await update.message.reply_text("Для управления используйте кнопки.")
+        context.user_data["awaiting_ad"] = False
+        await update.message.reply_text("Отправлено!", reply_markup=get_main_keyboard())
 
+# Парсинг HTML
+async def load_products():
+    global queue
+    queue = await html_parser.get_products()
+    logging.info(f"Загружено товаров: {len(queue)}")
+
+# Публикация
+async def post_next_item(context: ContextTypes.DEFAULT_TYPE):
+    global queue
+    if is_paused or not queue:
+        return
+    item = queue.pop(0)
+    text = f"<b>{item['name']}</b>\n{item['price']} ₽\n\n{item['description']}"
+    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=item["link"])]])
+    await context.bot.send_photo(chat_id=CHANNEL_ID, photo=item["image"], caption=text, parse_mode="HTML", reply_markup=buttons)
+
+# Планировщик
+def schedule_posts(app: Application):
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(lambda: app.create_task(post_next_item(app.bot)), trigger='cron', hour=12, minute=0)
+    scheduler.start()
+
+# Webhook запуск
 async def main():
-    await fetch_products()
-
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(send_product(app.bot)), 'interval', minutes=60)
-    scheduler.start()
+    await load_products()
+    schedule_posts(app)
 
-    await app.run_polling()
+    # Установка Webhook
+    await app.bot.set_webhook(WEBHOOK_URL)
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=8080,
+        webhook_path=WEBHOOK_PATH,
+        url_path=WEBHOOK_PATH,
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        if str(e).startswith("This event loop is already running"):
+            import nest_asyncio
+            nest_asyncio.apply()
+            asyncio.get_event_loop().run_until_complete(main())
