@@ -138,7 +138,7 @@ def schedule_posts(app: Application):
     scheduler.start()
 
 # Webhook запуск
-        if str(e).startswith("This event loop is already running"):
+    if str(e).startswith("This event loop is already running"):
 async def post_init(application):
     await load_products()
     schedule_posts(application)
