@@ -1,3 +1,4 @@
+import telegram
 import logging
 import asyncio
 import requests
