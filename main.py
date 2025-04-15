@@ -9,7 +9,8 @@ from telegram.ext import (
     filters,
 )
 import logging
-import html_parser  # твой модуль парсинга с HTML
+import xml.etree.ElementTree as ET
+import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import time
 
@@ -79,10 +80,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_ad"] = False
         await update.message.reply_text("Отправлено!", reply_markup=get_main_keyboard())
 
-# Парсинг HTML
+# Загрузка из YML
+async def get_products():
+    YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+    products = []
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(YML_URL) as resp:
+            text = await resp.text()
+
+    root = ET.fromstring(text)
+    for offer in root.findall(".//offer"):
+        name = offer.findtext("name")
+        price = float(offer.findtext("price", "0"))
+        description = offer.findtext("description", "")
+        image = offer.findtext("picture")
+        url = offer.findtext("url")
+
+        # Фильтрация
+        if not image or price < 300:
+            continue
+
+        # Генерация описания при отсутствии
+        if not description:
+            description = f"Подробности: {name}"
+
+        products.append({
+            "name": name,
+            "price": price,
+            "description": description,
+            "image": image,
+            "link": url
+        })
+
+    return products
+
+# Загрузка товаров
 async def load_products():
     global queue
-    queue = await html_parser.get_products()
+    queue = await get_products()
     logging.info(f"Загружено товаров: {len(queue)}")
 
 # Публикация
