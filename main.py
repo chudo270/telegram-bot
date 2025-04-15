@@ -167,7 +167,7 @@ async def main():
 
     from telegram.ext import CallbackQueryHandler  # Добавить в начало файла
 
-app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
 
     await app.run_polling()
