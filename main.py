@@ -138,32 +138,23 @@ def schedule_posts(app: Application):
     scheduler.start()
 
 # Webhook запуск
-async def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    await load_products()
-    schedule_posts(app)
-
-    # Установка и запуск
-    await app.bot.set_webhook(WEBHOOK_URL)
-    await app.run_webhook(
-    listen="0.0.0.0",
-    port=8080,
-    webhook_url=WEBHOOK_URL
-    )
-
-
-if __name__ == '__main__':
-    asyncio.run(main())
-if __name__ == "__main__":
     try:
-        asyncio.run(main())
     except RuntimeError as e:
         if str(e).startswith("This event loop is already running"):
             import nest_asyncio
             nest_asyncio.apply()
             asyncio.get_event_loop().run_until_complete(main())
+
+
+async def post_init(application):
+    await load_products()
+    schedule_posts(application)
+    await application.bot.set_webhook(WEBHOOK_URL)
+
+app = Application.builder().token(TOKEN).post_init(post_init).build()
+
+app.run_webhook(
+    listen="0.0.0.0",
+    port=8080,
+    webhook_url=WEBHOOK_URL,
+)
