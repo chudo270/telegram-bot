@@ -188,8 +188,9 @@ async def main():
     await application.run_polling()
 
 if __name__ == "__main__":
-    import nest_asyncio
     import asyncio
+    asyncio.run(main())
+
 
     nest_asyncio.apply()  # <-- Позволяет запускать loop повторно
     loop = asyncio.get_event_loop()
