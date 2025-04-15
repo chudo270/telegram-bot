@@ -19,6 +19,40 @@ scheduler = AsyncIOScheduler()
 product_queue = []
 paused = False
 awaiting_broadcast = False
+# Сюда вставляешь:
+import aiohttp
+from bs4 import BeautifulSoup
+
+YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+MIN_PRICE = 300
+
+async def fetch_products():
+    global product_queue
+    async with aiohttp.ClientSession() as session:
+        async with session.get(YML_URL) as resp:
+            text = await resp.text()
+            soup = BeautifulSoup(text, "xml")
+            items = soup.find_all("offer")
+            products = []
+            for item in items:
+                try:
+                    name = item.find("name").text.strip()
+                    price = int(float(item.find("price").text))
+                    description = item.find("description").text.strip()
+                    picture = item.find("picture").text.strip()
+                    url = item.find("url").text.strip()
+
+                    if price >= MIN_PRICE and picture and description:
+                        products.append({
+                            "name": name,
+                            "price": price,
+                            "description": description,
+                            "picture": picture,
+                            "url": url
+                        })
+                except:
+                    continue
+            product_queue = products
 
 # --- Утилиты ---
 
@@ -140,6 +174,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Запуск бота ---
 
 async def main():
+    await fetch_products()
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
