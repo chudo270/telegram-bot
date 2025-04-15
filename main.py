@@ -5,7 +5,8 @@ import time
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext
 from telegram.constants import ParseMode
-from telegram.update import Update
+from telegram import Update
+
 
 # --- НАСТРОЙКИ ---
 TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
