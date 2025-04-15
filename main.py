@@ -1,161 +1,110 @@
-import os
 import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 import asyncio
-import aiohttp
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.enums import ParseMode
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command
-from aiogram.utils.markdown import hbold
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime
 
-# Логирование
-logging.basicConfig(level=logging.INFO)
+# Конфигурация
+BOT_TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
+ADMIN_ID = 487591931
 
-# Переменные окружения
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-DATA_URL = os.getenv("DATA_URL")
-MIN_PRICE = int(os.getenv("MIN_PRICE", "300"))
-
-# Инициализация
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+# Включение логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-dp = Dispatcher(storage=MemoryStorage())
+# Глобальные переменные
+posting_paused = False
+current_product_index = 0
+products_cache = [
+    {'title': 'Товар 1', 'price': 350, 'description': 'Описание товара 1', 'photo': 'https://example.com/img1.jpg'},
+    {'title': 'Товар 2', 'price': 500, 'description': 'Описание товара 2', 'photo': 'https://example.com/img2.jpg'}
+    # Здесь можно подключить реальный источник данных
+]
 
-# Внутренняя память
-posted_products = set()
-is_paused = False
+# Команды администратора
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Бот запущен. Используйте /next, /pause, /resume, /status, /log.")
 
-async def fetch_products():
-    async with aiohttp.ClientSession() as session:
-        async with session.get(DATA_URL) as response:
-            if response.status != 200:
-                raise Exception(f"Ошибка загрузки данных: {response.status}")
-            data = await response.json()
+async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await post_next_product(context)
 
-            products = []
-            for product in data:
-                price = str(product.get("price", "0")).replace("₽", "").replace(",", ".")
-                if price:
-                    try:
-                        price_value = float(price)
-                        if price_value < MIN_PRICE:
-                            continue
-                        product["price"] = f"{int(price_value)} руб."
-                    except ValueError:
-                        continue
-                else:
-                    continue
+async def pause_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global posting_paused
+    if update.effective_user.id != ADMIN_ID:
+        return
+    posting_paused = True
+    await update.message.reply_text("Публикация приостановлена.")
 
-                if not product.get("photo") or not product.get("description"):
-                    continue
+async def resume_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global posting_paused
+    if update.effective_user.id != ADMIN_ID:
+        return
+    posting_paused = False
+    await update.message.reply_text("Публикация возобновлена.")
 
-                products.append(product)
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    status = "приостановлена" if posting_paused else "активна"
+    await update.message.reply_text(f"Публикация сейчас {status}. Текущий индекс товара: {current_product_index}")
 
-            return products
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Лог пуст (или подключите лог-файл).")
 
-def generate_post(product):
-    text = f"{hbold(product['name'])}\n\n"
-    if product.get("category"):
-        text += f"Категория: {product['category']}\n"
-    if product.get("article"):
-        text += f"Артикул: {product['article']}\n"
-    if product.get("price"):
-        text += f"Цена: {product['price']}\n"
-    if product.get("description"):
-        text += f"\n{product['description']}"
-    else:
-        text += "\nОписание скоро появится!"
+# Функция публикации товара
+async def post_next_product(context: ContextTypes.DEFAULT_TYPE):
+    global current_product_index
+    if posting_paused:
+        return
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Подробнее", url=product["url"])] if product.get("url") else []
-        ]
+    if current_product_index >= len(products_cache):
+        current_product_index = 0
+
+    product = products_cache[current_product_index]
+    current_product_index += 1
+
+    message = f"<b>{product['title']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
+    keyboard = [[InlineKeyboardButton("Купить", url="https://example.com")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=product['photo'],
+        caption=message,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
     )
-    return text, keyboard
 
-async def publish_next_product():
-    global posted_products, is_paused
-    if is_paused:
-        return
+# Планировщик ежедневной публикации
+async def daily_post(context: ContextTypes.DEFAULT_TYPE):
+    await post_next_product(context)
 
-    try:
-        products = await fetch_products()
-        for product in products:
-            product_id = product.get("id") or product.get("article") or product.get("name")
-            if product_id in posted_products:
-                continue
-
-            text, keyboard = generate_post(product)
-            photo = product.get("photo")
-
-            if photo:
-                await bot.send_photo(CHANNEL_ID, photo=photo, caption=text, reply_markup=keyboard)
-            else:
-                await bot.send_message(CHANNEL_ID, text, reply_markup=keyboard)
-
-            posted_products.add(product_id)
-            break
-    except Exception as e:
-        logging.error(f"Ошибка публикации: {e}")
-        await bot.send_message(ADMIN_ID, f"Ошибка публикации:\n{e}")
-
-# Команды
-@dp.message(Command(commands=["start", "help"]))
-async def cmd_start(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("Доступные команды:\n/next — следующий товар\n/pause — пауза\n/resume — продолжить\n/status — статус\n/log — лог")
-
-@dp.message(Command(commands=["next"]))
-async def cmd_next(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await publish_next_product()
-        await message.answer("Опубликован следующий товар.")
-
-@dp.message(Command(commands=["pause"]))
-async def cmd_pause(message: types.Message):
-    global is_paused
-    if message.from_user.id == ADMIN_ID:
-        is_paused = True
-        await message.answer("Публикация приостановлена.")
-
-@dp.message(Command(commands=["resume"]))
-async def cmd_resume(message: types.Message):
-    global is_paused
-    if message.from_user.id == ADMIN_ID:
-        is_paused = False
-        await message.answer("Публикация возобновлена.")
-
-@dp.message(Command(commands=["status"]))
-async def cmd_status(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        status = "на паузе" if is_paused else "активен"
-        await message.answer(f"Бот сейчас: {status}. Опубликовано товаров: {len(posted_products)}")
-
-@dp.message(Command(commands=["log"]))
-async def cmd_log(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("Пока логов нет или они в stdout.")
-
-# Планировщик
-scheduler = AsyncIOScheduler()
-scheduler.add_job(publish_next_product, "cron", hour=12, minute=0)
-
+# Основной запуск
 async def main():
-    scheduler.start()
-    await bot.send_message(ADMIN_ID, f"Бот запущен: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    await dp.start_polling(bot)
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-if __name__ == "__main__":
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("next", next_post))
+    application.add_handler(CommandHandler("pause", pause_posting))
+    application.add_handler(CommandHandler("resume", resume_posting))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("log", log))
+
+    # Планируем ежедневную публикацию в 12:00 МСК
+    application.job_queue.run_daily(daily_post, time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone.utc))
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await application.updater.idle()
+
+if __name__ == '__main__':
+    import datetime
     asyncio.run(main())
