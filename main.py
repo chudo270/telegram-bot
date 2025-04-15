@@ -157,8 +157,9 @@ async def main():
     await app.run_polling()
     import asyncio
 
-if __name__ == "__main__": 
-    
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
     except RuntimeError as e:
         if str(e).startswith("Cannot close a running event loop"):
             loop = asyncio.get_event_loop()
