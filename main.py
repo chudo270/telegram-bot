@@ -165,7 +165,10 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("^/log$"), log))
     app.add_handler(MessageHandler(filters.ALL, lambda u, c: None))  # глушим остальные
 
-    app.add_handler(telegram.ext.CallbackQueryHandler(button_handler))
+    from telegram.ext import CallbackQueryHandler  # Добавить в начало файла
+
+app.add_handler(CallbackQueryHandler(button_handler))
+
 
     await app.run_polling()
 
