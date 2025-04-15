@@ -145,16 +145,20 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    await load_products()
-    schedule_posts(app)
+async def main():
+        await load_products()
+        schedule_posts(app)
+    
+        # Установка и запуск
+    await app.bot.set_webhook(WEBHOOK_URL)
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=8080,
+        webhook_url=WEBHOOK_URL
+    )
 
-    # Установка и запуск
-await app.bot.set_webhook(WEBHOOK_URL)
-await app.run_webhook(
-    listen="0.0.0.0",
-    port=8080,
-    webhook_url=WEBHOOK_URL
-)
+if __name__ == '__main__':
+    asyncio.run(main())
 
 if __name__ == "__main__":
     try:
