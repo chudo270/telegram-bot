@@ -190,4 +190,7 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import nest_asyncio
+nest_asyncio.apply()
+asyncio.get_event_loop().run_until_complete(main())
+
