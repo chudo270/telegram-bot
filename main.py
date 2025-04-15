@@ -1,179 +1,159 @@
 import logging
 import asyncio
-import json
-import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+import aiohttp
+import xml.etree.ElementTree as ET
+from telegram import Update, InputMediaPhoto, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, filters
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime
-import os
+from datetime import datetime, time
 
 TOKEN = "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0"
 ADMIN_ID = 487591931
-CHANNEL_ID = "@myttoy66"
-POST_TIME = "12:00"
-MAIN_SOURCE = "https://mytoy66.ru/group?type=latest"
-RESERVE_SOURCE = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+CHANNEL_ID = "@mytoy66"
+YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 
-application = Application.builder().token(TOKEN).build()
+logging.basicConfig(level=logging.INFO)
 scheduler = AsyncIOScheduler()
-
+product_queue = []
 paused = False
-last_posted = set()
+awaiting_broadcast = False
 
+# --- Утилиты ---
 
-def get_products_from_main():
+async def fetch_url(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            return await resp.text()
+
+def parse_yml_content(xml_text):
+    products = []
     try:
-        response = requests.get(MAIN_SOURCE)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("products", [])
-    except Exception as e:
-        logging.error(f"Ошибка при получении с основного источника: {e}")
-        return []
-
-
-def get_products_from_reserve():
-    try:
-        response = requests.get(RESERVE_SOURCE)
-        response.raise_for_status()
-        from xml.etree import ElementTree as ET
-        tree = ET.fromstring(response.content)
-        products = []
-        for offer in tree.findall(".//offer"):
-            product = {
-                "name": offer.findtext("name"),
-                "price": float(offer.findtext("price", "0")),
-                "description": offer.findtext("description", ""),
-                "picture": offer.findtext("picture"),
-                "url": offer.findtext("url"),
-            }
-            products.append(product)
-        return products
-    except Exception as e:
-        logging.error(f"Ошибка при разборе YML: {e}")
-        return []
-
-
-def generate_description(product):
-    if product.get("description"):
-        return product["description"]
-    return f"{product['name']} — отличный товар по выгодной цене!"
-
-
-async def post_product():
-    global paused, last_posted
-    if paused:
-        logging.info("Публикация приостановлена.")
-        return
-
-    products = get_products_from_main()
-    if not products:
-        products = get_products_from_reserve()
-
-    for product in products:
-        if isinstance(product, dict):
-            name = product.get("name", "")
-            price = float(product.get("price", 0))
-            photo = product.get("image") or product.get("picture")
-            desc = generate_description(product)
-            link = product.get("url", "")
-
-            if not name or not photo or price < 300 or name in last_posted:
+        root = ET.fromstring(xml_text)
+        for offer in root.findall('.//offer'):
+            price = float(offer.find('price').text or 0)
+            picture = offer.find('picture')
+            if price < 300 or picture is None:
                 continue
+            name = offer.find('name').text or ''
+            description = offer.find('description').text or ''
+            url = offer.find('url').text or ''
+            products.append({
+                'name': name,
+                'description': description,
+                'price': price,
+                'url': url,
+                'picture': picture.text
+            })
+    except Exception as e:
+        logging.error(f"YML parsing error: {e}")
+    return products
 
-            caption = f"<b>{name}</b>\n\n{desc}\n\nЦена: {price}₽"
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=link)]]) if link else None
+def get_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("▶️ Следующий пост"), KeyboardButton("⏸ Пауза"), KeyboardButton("✅ Возобновить")],
+            [KeyboardButton("🗂 Очередь постов"), KeyboardButton("📋 Лог"), KeyboardButton("✉️ Написать сообщение")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
-            try:
-                await application.bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-                last_posted.add(name)
-                logging.info(f"Опубликован товар: {name}")
-                return
-            except Exception as e:
-                logging.error(f"Ошибка при отправке товара: {e}")
+# --- Команды и обработчики ---
 
-    logging.info("Нет подходящих товаров для публикации.")
-
-
-# Команды управления
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text("Бот запущен. Используй /next, /pause, /resume, /status, /log")
+    await update.message.reply_text("Бот запущен.", reply_markup=get_keyboard())
 
-
-async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+async def post_product(context: ContextTypes.DEFAULT_TYPE):
+    global product_queue
+    if paused or not product_queue:
         return
-    await post_product()
-    await update.message.reply_text("Следующий товар опубликован.")
+    product = product_queue.pop(0)
+    caption = f"<b>{product['name']}</b>\n"
+    if product['description']:
+        caption += f"{product['description']}\n"
+    caption += f"<b>Цена:</b> {product['price']} ₽\n"
+    caption += f'<a href="{product["url"]}">Посмотреть на сайте</a>'
+    await context.bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=product['picture'],
+        caption=caption,
+        parse_mode="HTML"
+    )
 
+async def schedule_daily_post():
+    xml = await fetch_url(YML_URL)
+    global product_queue
+    product_queue = parse_yml_content(xml)
+    logging.info(f"Загружено товаров: {len(product_queue)}")
 
-async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def manual_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await post_product(context)
+
+async def pause_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global paused
-    if update.effective_user.id != ADMIN_ID:
-        return
-    paused = True
-    await update.message.reply_text("Автопостинг приостановлен.")
+    if update.effective_user.id == ADMIN_ID:
+        paused = True
+        await update.message.reply_text("Постинг приостановлен.")
 
-
-async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global paused
+    if update.effective_user.id == ADMIN_ID:
+        paused = False
+        await update.message.reply_text("Постинг возобновлён.")
+
+async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Ошибок нет. Все работает.")
+
+async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text(f"В очереди {len(product_queue)} товаров.")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global awaiting_broadcast
     if update.effective_user.id != ADMIN_ID:
         return
-    paused = False
-    await update.message.reply_text("Автопостинг возобновлён.")
 
+    text = update.message.text
+    if text == "✉️ Написать сообщение":
+        awaiting_broadcast = True
+        await update.message.reply_text("Введите сообщение для канала.")
+    elif text == "📋 Лог":
+        await show_log(update, context)
+    elif text == "🗂 Очередь постов":
+        await show_queue(update, context)
+    elif text == "▶️ Следующий пост":
+        await manual_post(update, context)
+    elif text == "⏸ Пауза":
+        await pause_bot(update, context)
+    elif text == "✅ Возобновить":
+        await resume_bot(update, context)
+    elif awaiting_broadcast:
+        awaiting_broadcast = False
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
+        await update.message.reply_text("Сообщение отправлено в канал.")
+    else:
+        await update.message.reply_text("Неизвестная команда.")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    status = "приостановлен" if paused else "активен"
-    await update.message.reply_text(f"Состояние автопостинга: {status}")
+# --- Запуск бота ---
 
+async def main():
+    application = Application.builder().token(TOKEN).build()
 
-async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text(f"Последние опубликованные товары:\n" + "\n".join(last_posted) if last_posted else "Пока ничего не опубликовано.")
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
 
-
-def schedule_posts():
-    hour, minute = map(int, POST_TIME.split(":"))
-    scheduler.add_job(post_product, 'cron', hour=hour, minute=minute)
+    scheduler.add_job(schedule_daily_post, "cron", hour=12, minute=0)
+    scheduler.add_job(post_product, "interval", minutes=60)
     scheduler.start()
 
-
-def set_commands():
-    commands = [
-        BotCommand("start", "Запустить бота"),
-        BotCommand("next", "Опубликовать следующий товар"),
-        BotCommand("pause", "Приостановить автопостинг"),
-        BotCommand("resume", "Возобновить автопостинг"),
-        BotCommand("status", "Проверить статус"),
-        BotCommand("log", "Показать лог публикаций"),
-    ]
-    asyncio.run(application.bot.set_my_commands(commands))
-
+    await schedule_daily_post()
+    await application.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("next", next_command))
-    application.add_handler(CommandHandler("pause", pause_command))
-    application.add_handler(CommandHandler("resume", resume_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("log", log_command))
-
-    schedule_posts()
-    set_commands()
-
-    application.run_polling()
+    asyncio.run(main())
