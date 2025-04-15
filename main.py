@@ -185,12 +185,16 @@ async def main():
     scheduler.start()
 
     await schedule_daily_post()
-    await application.run_polling()
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    from telegram.ext import Application
 
+    async def run_bot():
+        await fetch_products()  # загружаем товары перед стартом
+        await application.run_polling()
+
+    asyncio.run(run_bot())
 
     nest_asyncio.apply()  # <-- Позволяет запускать loop повторно
     loop = asyncio.get_event_loop()
