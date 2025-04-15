@@ -1,113 +1,128 @@
+import asyncio
 import logging
 import requests
-import random
-import time
+import feedparser
+from bs4 import BeautifulSoup
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from telegram.constants import ParseMode
-import asyncio
-import datetime
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# --- НАСТРОЙКИ ---
+# === Настройки ===
 TOKEN = '7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0'
-CHANNEL_ID = '@Botrepostai_bot'
 ADMIN_ID = 487591931
-MAIN_URL = 'https://mytoy66.ru/group?type=latest'
-RESERVE_URL = 'https://mytoy66.ru/integration?int=avito&name=avitoo'
-POST_HOUR = 12
-POST_MINUTE = 0
+CHANNEL_ID = '@mytoy_channel'  # Замени на название своего канала
+SITE_URL = 'https://mytoy66.ru/group?type=latest'
+YML_URL = 'https://mytoy66.ru/integration?int=avito&name=avitoo'
 
-# --- ЛОГИ ---
+# === Логгирование ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-pause = False
-product_cache = []
-last_posted = set()
+# === Функция генерации описания ===
+def generate_description(name, image_url):
+    return f'Отличный товар: {name}. Подходит для любого возраста!'
 
-# --- ПОЛУЧЕНИЕ ТОВАРОВ ---
-def fetch_products():
+# === Парсинг сайта ===
+def fetch_products_from_site():
     try:
-        r = requests.get(MAIN_URL, timeout=10)
-        if r.status_code == 200 and 'products' in r.json():
-            return r.json()['products']
-    except:
-        pass
+        response = requests.get(SITE_URL)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        items = soup.select('.product-item')
+        products = []
+
+        for item in items:
+            name = item.select_one('.product-title').text.strip()
+            price = int(item.select_one('.price').text.replace('₽', '').strip().replace(' ', ''))
+            img_tag = item.select_one('img')
+            image = img_tag['src'] if img_tag else ''
+            link_tag = item.select_one('a')
+            link = 'https://mytoy66.ru' + link_tag['href'] if link_tag else ''
+            if image and price >= 300:
+                products.append({
+                    'name': name,
+                    'price': price,
+                    'image': image,
+                    'link': link,
+                    'description': generate_description(name, image)
+                })
+
+        return products
+    except Exception as e:
+        logger.error(f'Ошибка при парсинге сайта: {e}')
+        return []
+
+# === Парсинг YML ===
+def fetch_products_from_yml():
     try:
-        r = requests.get(RESERVE_URL, timeout=10)
-        if r.status_code == 200 and 'products' in r.json():
-            return r.json()['products']
-    except:
-        pass
-    return []
+        data = feedparser.parse(YML_URL)
+        products = []
 
-# --- ПОСТИНГ ---
-async def post_product(application):
-    global product_cache, last_posted
-    while True:
-        now = datetime.datetime.now()
-        if now.hour == POST_HOUR and now.minute == POST_MINUTE and not pause:
-            if not product_cache:
-                product_cache = fetch_products()
+        for entry in data.entries:
+            name = entry.title
+            price = int(entry.get('g_price', '0'))
+            image = entry.get('g_image_link', '')
+            link = entry.link
+            if image and price >= 300:
+                products.append({
+                    'name': name,
+                    'price': price,
+                    'image': image,
+                    'link': link,
+                    'description': generate_description(name, image)
+                })
 
-            for product in product_cache:
-                if product['id'] in last_posted:
-                    continue
-                if product.get('price', 0) < 300 or not product.get('images') or not product.get('name'):
-                    continue
+        return products
+    except Exception as e:
+        logger.error(f'Ошибка при парсинге YML: {e}')
+        return []
 
-                desc = product.get('description') or f"{product['name']}\nЦена: {product['price']}₽"
-                image_url = product['images'][0]
-                caption = f"<b>{product['name']}</b>\n{desc}\n\nЦена: {product['price']}₽"
+# === Публикация товара ===
+async def post_product(context: ContextTypes.DEFAULT_TYPE):
+    products = fetch_products_from_site()
+    if not products:
+        products = fetch_products_from_yml()
+    if not products:
+        return
 
-                await application.bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=image_url,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML
-                )
-                last_posted.add(product['id'])
-                break
-        await asyncio.sleep(60)
+    product = products[0]
+    text = f"<b>{product['name']}</b>\n\n{product['description']}\n\nЦена: {product['price']} ₽"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Купить", url=product['link'])]
+    ])
 
-# --- КОМАНДЫ ---
+    await context.bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=product['image'],
+        caption=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+
+# === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Бот работает. Используй /pause, /resume, /next, /status, /log")
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Бот запущен!")
 
-async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global pause
-    if update.effective_user.id == ADMIN_ID:
-        pause = True
-        await update.message.reply_text("Пауза включена")
+async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await post_product(context)
+    await update.message.reply_text("Товар опубликован.")
 
-async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global pause
-    if update.effective_user.id == ADMIN_ID:
-        pause = False
-        await update.message.reply_text("Пауза снята")
-
-async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        global product_cache
-        if not product_cache:
-            product_cache = fetch_products()
-        await post_product(context.application)
-
-# --- ЗАПУСК ---
+# === Главная функция ===
 async def main():
-    application = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("pause", pause_command))
-    application.add_handler(CommandHandler("resume", resume_command))
-    application.add_handler(CommandHandler("next", next_command))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("next", next_post))
 
-    # Запускаем фоновую задачу
-    application.job_queue.run_repeating(lambda ctx: asyncio.create_task(post_product(application)), interval=60)
+    job_queue = app.job_queue
+    job_queue.run_daily(post_product, time=datetime.time(hour=12, minute=0))
 
-    await application.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.idle()
 
 if __name__ == '__main__':
     asyncio.run(main())
