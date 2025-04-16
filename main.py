@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import requests
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0")
 ADMIN_ID = 487591931
 CHANNEL_ID = "@myttoy66"
-YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
+YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"  # твоя рабочая ссылка
 
 keyboard = [
     [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
@@ -47,6 +48,7 @@ def fetch_products_from_yml():
             price = offer.findtext("price")
             picture = offer.findtext("picture")
             description = offer.findtext("description") or ""
+            url = offer.findtext("url") or ""
 
             if not picture or not price or float(price) < 300:
                 continue
@@ -55,7 +57,8 @@ def fetch_products_from_yml():
                 "name": name,
                 "price": float(price),
                 "picture": picture,
-                "description": description
+                "description": description,
+                "url": url
             })
 
         return products
@@ -78,6 +81,10 @@ async def send_product(context: ContextTypes.DEFAULT_TYPE):
 
     product = queue[index]
     caption = f"<b>{product['name']}</b>\nЦена: {product['price']}₽\n\n{product['description']}"
+    
+    if product.get('url'):
+        caption += f'\n\n<a href="{product["url"]}">Подробнее на сайте</a>'
+
     await context.bot.send_photo(
         chat_id=CHANNEL_ID,
         photo=product['picture'],
@@ -140,7 +147,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
         await update.message.reply_text("Сообщение отправлено в канал.")
 
-def main():
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Загрузка очереди
@@ -153,7 +160,31 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        if str(e).startswith("This event loop is already running"):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.create_task(main())
+            loop.run_forever()
+        elif str(e).startswith("Cannot close a running event loop"):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.create_task(main())
+            loop.run_forever()
+        elif str(e).startswith("There is no current event loop in thread"):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(main())
+        else:
+            raise
