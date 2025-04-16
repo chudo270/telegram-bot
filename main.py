@@ -44,24 +44,26 @@ keyboard = [
 menu = InlineKeyboardMarkup(keyboard)
 # Генерация краткого описания с помощью OpenAI
 def generate_short_description(name: str, description: str = "") -> str:
+    logger.info(f"[GPT] Попытка генерации описания для: {name}")
+    prompt = f"Сгенерируй короткое продающее описание товара по названию:\nНазвание: {name}\n"
+    if description:
+        prompt += f"Описание: {description}\n"
+    prompt += "Ответь кратко, не более 30 слов."
+
     try:
-        prompt = (
-            f"Создай краткое продающее описание товара на русском языке. "
-            f"Название: {name}\nОписание: {description}"
-        )
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты маркетолог. Пиши лаконичные продающие тексты."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=60,
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
+            max_tokens=150,
         )
-        return response.choices[0].message['content'].strip()
+        result = response.choices[0].message.content.strip()
+        logger.info(f"[GPT] Успешно: {result}")
+        return result
     except Exception as e:
-        logger.error(f"Ошибка генерации описания: {e}")
-        return description or "Описание временно недоступно."
+        logger.error(f"[GPT] Ошибка генерации: {e}")
+        return description or "Описание недоступно."
+
 
 # Загрузка товаров из YML
 def fetch_products_from_yml():
