@@ -4,7 +4,6 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
-import openai
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,6 +15,9 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+import uuid
+from datetime import time
+import pytz
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -28,10 +30,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "487591931"))
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@myttoy66")
 YML_URL = os.getenv("YML_URL")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-openai.api_key = OPENAI_API_KEY
-
 keyboard = [
     [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
     [InlineKeyboardButton("⏸ Пауза", callback_data="pause"), InlineKeyboardButton("✅ Возобновить", callback_data="resume")],
@@ -42,173 +40,158 @@ keyboard = [
     [InlineKeyboardButton("⏭ Пропустить товар", callback_data="skip")],
 ]
 menu = InlineKeyboardMarkup(keyboard)
-# Генерация краткого описания с помощью OpenAI
-def generate_short_description(name: str, description: str = "") -> str:
-    logger.info(f"[GPT] Попытка генерации описания для: {name}")
-    prompt = f"Сгенерируй короткое продающее описание товара по названию:\nНазвание: {name}\n"
-    if description:
-        prompt += f"Описание: {description}\n"
-    prompt += "Ответь кратко, не более 30 слов."
+product_cache = []
+paused = False
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=150,
-        )
-        result = response.choices[0].message.content.strip()
-        logger.info(f"[GPT] Успешно: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"[GPT] Ошибка генерации: {e}")
-        return description or "Описание недоступно."
+def add_to_cache(product):
+    if product["id"] not in [p["id"] for p in product_cache]:
+        product_cache.append(product)
 
+def get_next_product():
+    if product_cache:
+        return product_cache.pop(0)
+    return None
 
-# Загрузка товаров из YML
 def fetch_products_from_yml():
     try:
         response = requests.get(YML_URL)
-        response.raise_for_status()
-        tree = ET.fromstring(response.content)
+        if response.status_code == 200:
+            root = ET.fromstring(response.content)
+            products = []
+            for offer in root.findall(".//offer"):
+                price = int(float(offer.findtext("price", "0")))
+                picture = offer.findtext("picture")
+                name = offer.findtext("name")
+                description = offer.findtext("description", "")
+                url = offer.findtext("url")
+                category = offer.findtext("categoryId")
+                vendor_code = offer.get("id")
 
-        products = []
-        for offer in tree.findall(".//offer"):
-            name = offer.findtext("name")
-            price = offer.findtext("price")
-            picture = offer.findtext("picture")
-            url = offer.findtext("url")
-            description = offer.findtext("description") or ""
+                if not picture or price < 300:
+                    continue
 
-            if not picture or not price or float(price) < 300:
-                continue
-
-            generated = generate_short_description(name, description)
-            products.append({
-                "name": name,
-                "price": float(price),
-                "picture": picture,
-                "url": url,
-                "description": generated
-            })
-
-        return products
-
+                products.append({
+                    "id": str(uuid.uuid4()),
+                    "name": name,
+                    "description": description,
+                    "price": price,
+                    "picture": picture,
+                    "url": url,
+                    "category": category,
+                    "vendor_code": vendor_code
+                })
+            return products
     except Exception as e:
-        logger.error(f"Ошибка загрузки YML: {e}")
-        return []
-# Публикация товара в канал
-async def post_product_to_channel(context: ContextTypes.DEFAULT_TYPE):
-    queue = context.bot_data.get("queue", [])
-    if not queue:
-        logger.warning("Очередь пуста, пробуем загрузить заново.")
-        queue = fetch_products_from_yml()
-        context.bot_data["queue"] = queue
-        if not queue:
-            logger.error("Не удалось загрузить товары.")
-            return
+        logger.error(f"Ошибка при загрузке YML: {e}")
+    return []
 
-    product = queue.pop(0)
-
-    caption = f"<b>{product['name']}</b>\n\n{product['description']}\n\nЦена: {int(product['price'])}₽"
-    button = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=product['url'])]])
-
+def generate_description_giga(name, description=""):
     try:
-        await context.bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=product["picture"],
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=button
+        headers = {
+            "Authorization": f"Basic {os.getenv('GIGACHAT_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        prompt = f"Сделай короткое продающее описание для товара: {name}. {description}"
+        payload = {
+            "model": "GigaChat-Pro",
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        response = requests.post(
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            headers=headers,
+            json=payload
         )
+        if response.status_code == 200:
+            reply = response.json()
+            return reply["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.error(f"Ошибка при генерации описания: {e}")
+    return "Отличный выбор! Подходит для любого случая."
+def send_product(bot: Bot, chat_id: int, product: dict):
+    try:
+        caption = f"<b>{product['name']}</b>\n\n"
+        description = generate_description_giga(product['name'], product.get('description', ''))
+        caption += f"{description}\n\n<b>Цена: {product['price']} ₽</b>"
+        url_button = InlineKeyboardButton("Купить", url=product['url'])
+        markup = InlineKeyboardMarkup([[url_button]])
+
+        bot.send_photo(
+            chat_id=chat_id,
+            photo=product['picture'],
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup
+        )
+        logger.info(f"Товар отправлен: {product['name']}")
     except Exception as e:
         logger.error(f"Ошибка при отправке товара: {e}")
+@dp.callback_query_handler(lambda c: c.data == 'next')
+async def callback_next(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    await post_next_product()
 
-# Обработчик команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Доступ запрещён.")
-        return
-    await update.message.reply_text("Бот запущен. Меню ниже:", reply_markup=menu)
+@dp.callback_query_handler(lambda c: c.data == 'pause')
+async def callback_pause(callback_query: types.CallbackQuery):
+    global paused
+    paused = True
+    await bot.answer_callback_query(callback_query.id, text="Публикация приостановлена.")
 
-# Обработка кнопок
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+@dp.callback_query_handler(lambda c: c.data == 'resume')
+async def callback_resume(callback_query: types.CallbackQuery):
+    global paused
+    paused = False
+    await bot.answer_callback_query(callback_query.id, text="Публикация возобновлена.")
 
-    query = update.callback_query
-    await query.answer()
+@dp.callback_query_handler(lambda c: c.data == 'queue')
+async def callback_queue(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    queue_preview = "\n".join([f"{idx+1}. {p['name']}" for idx, p in enumerate(product_queue[:10])])
+    text = queue_preview if queue_preview else "Очередь пуста."
+    await bot.send_message(callback_query.from_user.id, f"<b>Текущая очередь:</b>\n{text}", parse_mode=ParseMode.HTML)
 
-    data = query.data
-    queue = context.bot_data.get("queue", [])
+@dp.callback_query_handler(lambda c: c.data == 'broadcast')
+async def callback_broadcast(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    await bot.send_message(callback_query.from_user.id, "Введите сообщение для рассылки:")
+    # Здесь должно быть логическое продолжение в виде FSM или глобального флага ожидания текста
 
-    if data == "next":
-        await post_product_to_channel(context)
-        await query.edit_message_text("Отправлен следующий товар.", reply_markup=menu)
+@dp.callback_query_handler(lambda c: c.data == 'log')
+async def callback_log(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    if os.path.exists('bot.log'):
+        with open('bot.log', 'r', encoding='utf-8') as f:
+            log_text = f.readlines()[-20:]  # последние 20 строк
+        await bot.send_message(callback_query.from_user.id, "<b>Лог:</b>\n" + "".join(log_text), parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(callback_query.from_user.id, "Лог-файл не найден.")
 
-    elif data == "pause":
-        context.bot_data["paused"] = True
-        await query.edit_message_text("Публикация поставлена на паузу.", reply_markup=menu)
+@dp.callback_query_handler(lambda c: c.data == 'status')
+async def callback_status(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    status = "Пауза" if paused else "Активен"
+    await bot.send_message(callback_query.from_user.id, f"<b>Статус:</b> {status}", parse_mode=ParseMode.HTML)
 
-    elif data == "resume":
-        context.bot_data["paused"] = False
-        await query.edit_message_text("Публикация возобновлена.", reply_markup=menu)
+@dp.callback_query_handler(lambda c: c.data == 'skip')
+async def callback_skip(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id, text="Товар пропущен.")
+    if product_queue:
+        product_queue.pop(0)
+async def scheduled_post():
+    if not paused and product_queue:
+        await post_next_product()
 
-    elif data == "queue":
-        text = "\n\n".join(
-            [f"{i+1}. {item['name']} – {item['price']}₽" for i, item in enumerate(queue[:10])]
-        ) if queue else "Очередь пуста."
-        await query.edit_message_text(text, reply_markup=menu)
-
-    elif data == "log":
-        try:
-            with open("bot_log.txt", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-10:]
-            await query.edit_message_text("Последние записи:\n" + "".join(lines), reply_markup=menu)
-        except Exception as e:
-            await query.edit_message_text(f"Ошибка чтения лога: {e}", reply_markup=menu)
-
-    elif data == "status":
-        paused = context.bot_data.get("paused", False)
-        status = "⏸ Пауза" if paused else "▶️ Активен"
-        await query.edit_message_text(f"Статус: {status}", reply_markup=menu)
-
-    elif data == "skip":
-        if queue:
-            skipped = queue.pop(0)
-            await query.edit_message_text(f"Пропущен: {skipped['name']}", reply_markup=menu)
-        else:
-            await query.edit_message_text("Очередь пуста.", reply_markup=menu)
-# Главная функция запуска
 async def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    context = application.bot_data
-
-    # Начальная загрузка товаров
-    context["queue"] = fetch_products_from_yml()
-    context["paused"] = False
-
-    # Планировщик публикаций
-    scheduler = AsyncIOScheduler()
-
-    def job_wrapper():
-        if not context.get("paused", False):
-            return asyncio.create_task(post_product_to_channel(context))
-        else:
-            logger.info("Публикация на паузе.")
-
-    scheduler.add_job(job_wrapper, CronTrigger(hour=12, minute=0))
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(scheduled_post, CronTrigger(hour=12, minute=0))  # ежедневная публикация в 12:00 МСК
     scheduler.start()
 
-    # Обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(handle_buttons))
-
-    # Запуск бота
-    await application.run_polling()
+    logging.info("Бот запущен")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Бот остановлен вручную")
+    except Exception as e:
+        logging.exception(f"Произошла критическая ошибка: {e}")
