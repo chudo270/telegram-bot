@@ -119,9 +119,7 @@ async def post_next_product():
     if product:
         try:
             bot = Bot(token=BOT_TOKEN)
-            caption = f"<b>{product['name']}</b>
-
-"
+            caption = f"<b>{product['name']}</b>"
             description = generate_description_giga(product['name'], product.get('description', ''))
             caption += f"{description}
 
