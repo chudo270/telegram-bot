@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0")
 ADMIN_ID = 487591931
 CHANNEL_ID = "@myttoy66"
-YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 
 keyboard = [
     [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
