@@ -153,8 +153,11 @@ async def callback_queue(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == 'broadcast')
 async def callback_broadcast(callback_query: types.CallbackQuery):
+    global waiting_for_broadcast
+    waiting_for_broadcast = True
     await bot.answer_callback_query(callback_query.id)
-    await bot.send_message(callback_query.from_user.id, "Введите сообщение для рассылки:")
+    await bot.send_message(callback_query.from_user.id, "Отправьте сообщение для рассылки (можно с фото и подписью):")
+
     # Здесь должно быть логическое продолжение в виде FSM или глобального флага ожидания текста
 
 @dp.callback_query_handler(lambda c: c.data == 'log')
