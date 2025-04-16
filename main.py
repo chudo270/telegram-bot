@@ -1,3 +1,4 @@
+import nest_asyncio
 import asyncio
 import logging
 import os
@@ -207,4 +208,5 @@ async def main():
 if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
+    import asyncio
     asyncio.run(main())
