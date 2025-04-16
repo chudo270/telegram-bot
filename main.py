@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
+import openai
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,19 +25,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Настройки
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7766369540:AAGKLs-BDwavHlN6dr9AUHWIeIhdJLq5nM0")
-ADMIN_ID = 487591931
-CHANNEL_ID = "@myttoy66"
-YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 487591931))
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@myttoy66")
+YML_URL = os.getenv("YML_URL", "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514")
 
+# Проверка переменных окружения
+if not BOT_TOKEN:
+    logger.error("Переменная BOT_TOKEN не установлена.")
+    raise ValueError("BOT_TOKEN не указан.")
+
+if not OPENAI_API_KEY:
+    logger.error("Переменная OPENAI_API_KEY не установлена.")
+    raise ValueError("OPENAI_API_KEY не указан.")
+
+openai.api_key = OPENAI_API_KEY
+
+# Меню управления
 keyboard = [
     [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
     [InlineKeyboardButton("⏸ Пауза", callback_data="pause"), InlineKeyboardButton("✅ Возобновить", callback_data="resume")],
     [InlineKeyboardButton("📋 Очередь постов", callback_data="queue")],
     [InlineKeyboardButton("📨 Написать сообщение", callback_data="broadcast")],
     [InlineKeyboardButton("📄 Лог", callback_data="log")],
+    [InlineKeyboardButton("ℹ️ Статус", callback_data="status")],
+    [InlineKeyboardButton("⏭ Пропустить товар", callback_data="skip")],
 ]
 menu = InlineKeyboardMarkup(keyboard)
+
 
 def fetch_products_from_yml():
     try:
