@@ -3,6 +3,7 @@ import logging
 import os
 import requests
 import yaml
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
 from telegram.ext import (
     ApplicationBuilder, CallbackQueryHandler, CommandHandler,
