@@ -259,7 +259,8 @@ async def start_bot():
     await app.start()
     await app.updater.start_polling()
     await app.updater.idle()
-
+    
+import asyncio
 
 if __name__ == "__main__":
     import nest_asyncio
