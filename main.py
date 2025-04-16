@@ -155,6 +155,26 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     await app.run_polling()
+    from telegram.ext 
+    import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+
+# ...весь твой остальной код остаётся без изменений...
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Загрузка очереди
+    products = fetch_products_from_yml()
+    app.bot_data["queue"] = products
+    app.bot_data["queue_index"] = 0
+    app.bot_data["paused"] = False
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.run_polling()  # без await
+
     import asyncio
 
 if __name__ == "__main__":
