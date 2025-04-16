@@ -4,9 +4,14 @@ import os
 import requests
 import yaml
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters  # <-- добавлен MessageHandler
+)
 from datetime import time
 import base64
+import uuid
+import xml.etree.ElementTree as ET
 
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
