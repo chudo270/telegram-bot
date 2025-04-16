@@ -1,7 +1,9 @@
 import logging
 import os
 import requests
-import xml.etree.ElementTree as ET  # заменяет yaml
+import xml.etree.ElementTree as ET # заменяет yaml
+import nest_asyncio
+nest_asyncio.apply()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from datetime import time
