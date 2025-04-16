@@ -41,6 +41,8 @@ keyboard = [
 ]
 menu = InlineKeyboardMarkup(keyboard)
 product_cache = []
+product_queue = product_cache
+
 paused = False
 
 def add_to_cache(product):
