@@ -11,6 +11,7 @@ import base64
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройки
+CHANNEL_ID = "@myttoy66"  # Telegram-канал, куда бот публикует товары
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
