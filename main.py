@@ -121,7 +121,7 @@ async def post_next_product():
             bot = Bot(token=BOT_TOKEN)
             caption = f"<b>{product['name']}</b>"
             description = generate_description_giga(product['name'], product.get('description', ''))
-            caption += f"{description}
+            caption += f"{description}"
 
 <b>Цена: {product['price']} ₽</b>"
             url_button = InlineKeyboardButton("Купить", url=product['url'])
