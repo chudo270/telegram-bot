@@ -13,7 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
-YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
+YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_TOKEN = os.getenv("GIGACHAT_TOKEN")
 
 product_queue = []
@@ -178,7 +178,8 @@ async def start_bot():
     await app.run_polling()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(start_bot())
-
-
+    import nest_asyncio
+    nest_asyncio.apply()
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start_bot())
