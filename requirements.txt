@@ -7,5 +7,6 @@ feedparser
 beautifulsoup4
 aiohttp
 python-telegram-bot[webhooks]
-openai
+PyYAML
+
 
