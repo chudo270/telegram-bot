@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import requests
@@ -155,16 +154,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
         await update.message.reply_text("Сообщение отправлено в канал.")
 
-async def main():
+if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Загрузка очереди
     products = fetch_products_from_yml()
     app.bot_data["queue"] = products
     app.bot_data["queue_index"] = 0
     app.bot_data["paused"] = False
 
-    # Планировщик
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_product, CronTrigger(hour=12, minute=0, timezone="Europe/Moscow"), args=[app])
     scheduler.start()
@@ -173,31 +170,5 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    await app.run_polling()
+    app.run_polling()
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except RuntimeError as e:
-        if str(e).startswith("This event loop is already running"):
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.create_task(main())
-            loop.run_forever()
-        elif str(e).startswith("Cannot close a running event loop"):
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.create_task(main())
-            loop.run_forever()
-        elif str(e).startswith("There is no current event loop in thread"):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(main())
-        else:
-            raise
