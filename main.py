@@ -1,10 +1,12 @@
+
 import nest_asyncio
 import asyncio
 import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Bot, InputMediaPhoto
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -30,6 +32,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "487591931"))
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@myttoy66")
 YML_URL = os.getenv("YML_URL")
+
 keyboard = [
     [InlineKeyboardButton("▶️ Следующий пост", callback_data="next")],
     [InlineKeyboardButton("⏸ Пауза", callback_data="pause"), InlineKeyboardButton("✅ Возобновить", callback_data="resume")],
@@ -40,10 +43,11 @@ keyboard = [
     [InlineKeyboardButton("⏭ Пропустить товар", callback_data="skip")],
 ]
 menu = InlineKeyboardMarkup(keyboard)
+
 product_cache = []
 product_queue = product_cache
-
 paused = False
+waiting_for_broadcast = False
 
 def add_to_cache(product):
     if product["id"] not in [p["id"] for p in product_cache]:
@@ -109,92 +113,107 @@ def generate_description_giga(name, description=""):
     except Exception as e:
         logger.error(f"Ошибка при генерации описания: {e}")
     return "Отличный выбор! Подходит для любого случая."
-def send_product(bot: Bot, chat_id: int, product: dict):
-    try:
-        caption = f"<b>{product['name']}</b>\n\n"
-        description = generate_description_giga(product['name'], product.get('description', ''))
-        caption += f"{description}\n\n<b>Цена: {product['price']} ₽</b>"
-        url_button = InlineKeyboardButton("Купить", url=product['url'])
-        markup = InlineKeyboardMarkup([[url_button]])
 
-        bot.send_photo(
-            chat_id=chat_id,
-            photo=product['picture'],
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            reply_markup=markup
-        )
-        logger.info(f"Товар отправлен: {product['name']}")
-    except Exception as e:
-        logger.error(f"Ошибка при отправке товара: {e}")
-@dp.callback_query_handler(lambda c: c.data == 'next')
-async def callback_next(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    await post_next_product()
+async def post_next_product():
+    product = get_next_product()
+    if product:
+        try:
+            bot = Bot(token=BOT_TOKEN)
+            caption = f"<b>{product['name']}</b>
 
-@dp.callback_query_handler(lambda c: c.data == 'pause')
-async def callback_pause(callback_query: types.CallbackQuery):
-    global paused
-    paused = True
-    await bot.answer_callback_query(callback_query.id, text="Публикация приостановлена.")
+"
+            description = generate_description_giga(product['name'], product.get('description', ''))
+            caption += f"{description}
 
-@dp.callback_query_handler(lambda c: c.data == 'resume')
-async def callback_resume(callback_query: types.CallbackQuery):
-    global paused
-    paused = False
-    await bot.answer_callback_query(callback_query.id, text="Публикация возобновлена.")
+<b>Цена: {product['price']} ₽</b>"
+            url_button = InlineKeyboardButton("Купить", url=product['url'])
+            markup = InlineKeyboardMarkup([[url_button]])
 
-@dp.callback_query_handler(lambda c: c.data == 'queue')
-async def callback_queue(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    queue_preview = "\n".join([f"{idx+1}. {p['name']}" for idx, p in enumerate(product_queue[:10])])
-    text = queue_preview if queue_preview else "Очередь пуста."
-    await bot.send_message(callback_query.from_user.id, f"<b>Текущая очередь:</b>\n{text}", parse_mode=ParseMode.HTML)
+            await bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=product['picture'],
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup
+            )
+            logger.info(f"Товар отправлен: {product['name']}")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке товара: {e}")
 
-@dp.callback_query_handler(lambda c: c.data == 'broadcast')
-async def callback_broadcast(callback_query: types.CallbackQuery):
-    global waiting_for_broadcast
-    waiting_for_broadcast = True
-    await bot.answer_callback_query(callback_query.id)
-    await bot.send_message(callback_query.from_user.id, "Отправьте сообщение для рассылки (можно с фото и подписью):")
-
-    # Здесь должно быть логическое продолжение в виде FSM или глобального флага ожидания текста
-
-@dp.callback_query_handler(lambda c: c.data == 'log')
-async def callback_log(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    if os.path.exists('bot.log'):
-        with open('bot.log', 'r', encoding='utf-8') as f:
-            log_text = f.readlines()[-20:]  # последние 20 строк
-        await bot.send_message(callback_query.from_user.id, "<b>Лог:</b>\n" + "".join(log_text), parse_mode=ParseMode.HTML)
-    else:
-        await bot.send_message(callback_query.from_user.id, "Лог-файл не найден.")
-
-@dp.callback_query_handler(lambda c: c.data == 'status')
-async def callback_status(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id)
-    status = "Пауза" if paused else "Активен"
-    await bot.send_message(callback_query.from_user.id, f"<b>Статус:</b> {status}", parse_mode=ParseMode.HTML)
-
-@dp.callback_query_handler(lambda c: c.data == 'skip')
-async def callback_skip(callback_query: types.CallbackQuery):
-    await bot.answer_callback_query(callback_query.id, text="Товар пропущен.")
-    if product_queue:
-        product_queue.pop(0)
 async def scheduled_post():
     if not paused and product_queue:
         await post_next_product()
 
 async def main():
+    global bot
+    bot = Bot(token=BOT_TOKEN)
+    dp = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    dp.add_handler(CallbackQueryHandler(callback_next, pattern="next"))
+    dp.add_handler(CallbackQueryHandler(callback_pause, pattern="pause"))
+    dp.add_handler(CallbackQueryHandler(callback_resume, pattern="resume"))
+    dp.add_handler(CallbackQueryHandler(callback_queue, pattern="queue"))
+    dp.add_handler(CallbackQueryHandler(callback_broadcast, pattern="broadcast"))
+    dp.add_handler(CallbackQueryHandler(callback_log, pattern="log"))
+    dp.add_handler(CallbackQueryHandler(callback_status, pattern="status"))
+    dp.add_handler(CallbackQueryHandler(callback_skip, pattern="skip"))
+
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(scheduled_post, CronTrigger(hour=12, minute=0))  # ежедневная публикация в 12:00 МСК
+    scheduler.add_job(scheduled_post, CronTrigger(hour=12, minute=0))
     scheduler.start()
 
     logging.info("Бот запущен")
-    await dp.start_polling(bot)
+    await dp.run_polling()
+
+async def callback_next(update, context):
+    await update.callback_query.answer()
+    await post_next_product()
+
+async def callback_pause(update, context):
+    global paused
+    paused = True
+    await update.callback_query.answer("Публикация приостановлена.")
+
+async def callback_resume(update, context):
+    global paused
+    paused = False
+    await update.callback_query.answer("Публикация возобновлена.")
+
+async def callback_queue(update, context):
+    await update.callback_query.answer()
+    queue_preview = "
+".join([f"{idx+1}. {p['name']}" for idx, p in enumerate(product_queue[:10])])
+    text = queue_preview if queue_preview else "Очередь пуста."
+    await bot.send_message(update.effective_user.id, f"<b>Текущая очередь:</b>
+{text}", parse_mode=ParseMode.HTML)
+
+async def callback_broadcast(update, context):
+    await update.callback_query.answer()
+    await bot.send_message(update.effective_user.id, "Отправьте сообщение для рассылки (можно с фото и подписью):")
+
+async def callback_log(update, context):
+    await update.callback_query.answer()
+    if os.path.exists('bot.log'):
+        with open('bot.log', 'r', encoding='utf-8') as f:
+            log_text = f.readlines()[-20:]
+        await bot.send_message(update.effective_user.id, "<b>Лог:</b>
+" + "".join(log_text), parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(update.effective_user.id, "Лог-файл не найден.")
+
+async def callback_status(update, context):
+    await update.callback_query.answer()
+    status = "Пауза" if paused else "Активен"
+    await bot.send_message(update.effective_user.id, f"<b>Статус:</b> {status}", parse_mode=ParseMode.HTML)
+
+async def callback_skip(update, context):
+    await update.callback_query.answer("Товар пропущен.")
+    if product_queue:
+        product_queue.pop(0)
 
 if __name__ == "__main__":
     try:
+        nest_asyncio.apply()
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Бот остановлен вручную")
