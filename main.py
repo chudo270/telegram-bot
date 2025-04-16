@@ -10,7 +10,7 @@ import base64
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
-SITE_URL = "https://mytoy66.ru"
+SITE_URL = "https://myttoy66.ru"
 YML_URL = "https://mytoy66.ru/integration?int=avito&name=avitoo"
 GIGACHAT_TOKEN = os.getenv("GIGACHAT_TOKEN")
 
