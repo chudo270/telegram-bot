@@ -30,31 +30,44 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")]
 ])
 
+import xml.etree.ElementTree as ET
+
 def load_products_from_yml(yml_url):
     try:
         response = requests.get(yml_url)
         if response.status_code == 200:
-            yml_data = yaml.safe_load(response.text)
-            items = yml_data.get("yml_catalog", {}).get("shop", {}).get("offers", {}).get("offer", [])
+            root = ET.fromstring(response.content)
             products = []
-            for item in items:
-                price = int(float(item.get("price", 0)))
-                picture = item.get("picture")
-                description = item.get("description", "")
-                if price >= 300 and picture:
-                    products.append({
-                        "id": item.get("id"),
-                        "name": item.get("name"),
-                        "price": price,
-                        "url": item.get("url"),
-                        "category": item.get("categoryId"),
-                        "picture": picture,
-                        "description": description
-                    })
+
+            # Путь к тегу <offer> внутри <offers>
+            for offer in root.findall(".//offer"):
+                price = offer.findtext("price")
+                picture = offer.findtext("picture")
+                name = offer.findtext("name")
+                url = offer.findtext("url")
+                category = offer.findtext("categoryId")
+                description = offer.findtext("description", "")
+
+                if price and picture:
+                    try:
+                        price = int(float(price))
+                        if price >= 300:
+                            products.append({
+                                "id": offer.attrib.get("id"),
+                                "name": name,
+                                "price": price,
+                                "url": url,
+                                "category": category,
+                                "picture": picture,
+                                "description": description or ""
+                            })
+                    except ValueError:
+                        continue
             return products
     except Exception as e:
         logging.error(f"Ошибка при загрузке YML: {e}")
     return []
+
 
 def generate_description(name, description):
     try:
