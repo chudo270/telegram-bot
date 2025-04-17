@@ -43,6 +43,7 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")],
     [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
 ])
+
 def load_products_from_yml(yml_url):
     try:
         r = requests.get(yml_url)
@@ -106,8 +107,9 @@ def generate_description(name, description):
     except Exception as e:
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
-        async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
-            global paused, product_queue
+
+async def publish_next_product(bot):
+    global paused, product_queue
     if paused or not product_queue:
         return
     p = product_queue.pop(0)
@@ -118,7 +120,7 @@ def generate_description(name, description):
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=p['url'])]])
     try:
-        await ctx.bot.send_photo(
+        await bot.send_photo(
             chat_id=CHANNEL_ID,
             photo=p['picture'],
             caption=text,
@@ -150,7 +152,7 @@ async def resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def next_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await publish_next_product(ctx)
+    await publish_next_product(ctx.bot)
 
 async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -162,7 +164,8 @@ async def show_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
-    async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+
+async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text("Отправьте фото с подписью для рассылки в канал.", reply_markup=main_menu)
@@ -194,8 +197,12 @@ async def ask_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка нейросети: {e}")
         await update.message.reply_text("Ошибка генерации.", reply_markup=main_menu)
 
+# Заглушка для menu_callback для обработки callback запросов
+async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+
 def main():
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("pause", pause))
@@ -211,8 +218,8 @@ def main():
     application.add_handler(CallbackQueryHandler(menu_callback))
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(load_products, "interval", hours=1)
-    scheduler.add_job(lambda: publish_next_product(application.bot), "cron", hour=12, minute=0, timezone="Europe/Moscow")
+    scheduler.add_job(load_products_from_sources, "interval", hours=1)
+    scheduler.add_job(lambda: asyncio.create_task(publish_next_product(application.bot)), "cron", hour=12, minute=0, timezone="Europe/Moscow")
     scheduler.start()
 
     application.run_webhook(
