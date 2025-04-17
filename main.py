@@ -306,3 +306,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+     except (KeyboardInterrupt, SystemExit):
+        logging.info("Бот остановлен вручную")
+    except Exception as e:
+        logging.exception(f"Произошла критическая ошибка: {e}")
