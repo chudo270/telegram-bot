@@ -281,7 +281,10 @@ if __name__ == "__main__":
     app = build_application()
     PORT = int(os.environ.get("PORT", 8080))
 
-    asyncio.run(app.initialize())
-    asyncio.run(app.start())
-    asyncio.run(app.bot.set_webhook(f"{WEBHOOK_URL}"))
-    asyncio.get_event_loop().run_forever()
+    async def main():
+        await app.initialize()
+        await app.bot.set_webhook(WEBHOOK_URL)
+        await app.start()
+        logger.info(f"Бот слушает webhook на порту {PORT}.")
+
+    asyncio.run(main())
