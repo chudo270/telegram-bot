@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 import requests
 import xml.etree.ElementTree as ET
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
