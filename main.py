@@ -2,6 +2,7 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
+import asyncio
 from datetime import time
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
