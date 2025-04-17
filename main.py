@@ -2,46 +2,45 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
-import asyncio
-from telegram.ext import Application
 from datetime import time
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
-    CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
+    CallbackQueryHandler,
     MessageHandler,
+    ContextTypes,
     filters,
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Настройки
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-YML_URL     = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
+# Настройки из окружения
+WEBHOOK_URL       = os.getenv("WEBHOOK_URL")       # e.g. https://worker-production-c8d5.up.railway.app
+BOT_TOKEN         = os.getenv("BOT_TOKEN")
+YML_URL           = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
-CHANNEL_ID  = "@myttoy66"
-ADMIN_ID    = 487591931
+CHANNEL_ID        = "@myttoy66"
+ADMIN_ID          = 487591931
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Состояние
 product_queue = []
 paused = False
 
 main_menu = InlineKeyboardMarkup([
-    [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
-    [InlineKeyboardButton("⏸ Пауза",   callback_data="pause"),
+    [InlineKeyboardButton("▶️ Следующий",   callback_data="next")],
+    [InlineKeyboardButton("⏸ Пауза",        callback_data="pause"),
      InlineKeyboardButton("▶️ Возобновить", callback_data="resume")],
-    [InlineKeyboardButton("📦 Очередь", callback_data="queue"),
-     InlineKeyboardButton("⏭ Пропустить", callback_data="skip")],
-    [InlineKeyboardButton("📊 Статус", callback_data="status"),
-     InlineKeyboardButton("📝 Логи", callback_data="log")],
-    [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")],
-    [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
+    [InlineKeyboardButton("📦 Очередь",      callback_data="queue"),
+     InlineKeyboardButton("⏭ Пропустить",   callback_data="skip")],
+    [InlineKeyboardButton("📊 Статус",       callback_data="status"),
+     InlineKeyboardButton("📝 Логи",        callback_data="log")],
+    [InlineKeyboardButton("📢 Рассылка",     callback_data="broadcast")],
+    [InlineKeyboardButton("🧠 Нейросеть",    callback_data="ai")]
 ])
 
 def load_products_from_yml(yml_url):
@@ -99,7 +98,7 @@ def generate_description(name, description):
             "n": 1
         }
         resp = requests.post(
-            "https://gigachat.devices....bank.ru/api/v1/chat/completions",
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             json=payload, headers=headers
         )
         resp.raise_for_status()
@@ -130,7 +129,7 @@ async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка публикации: {e}")
 
-# Handlers
+# Команды и коллбэки
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -177,14 +176,14 @@ async def broadcast_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     ctx.user_data["broadcast"] = False
     if update.message.photo:
-        photo = update.message.photo[-1].file_id
+        photo   = update.message.photo[-1].file_id
         caption = update.message.caption or ""
         await ctx.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption)
     else:
         await ctx.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
 
 async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+    q    = update.callback_query
     await q.answer()
     data = q.data
     if data == "next":
@@ -208,13 +207,13 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def build_application():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("pause", pause))
-    app.add_handler(CommandHandler("resume", resume))
-    app.add_handler(CommandHandler("next", next_cmd))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("queue", show_queue))
-    app.add_handler(CommandHandler("broadcast", broadcast_start))
+    app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CommandHandler("pause",    pause))
+    app.add_handler(CommandHandler("resume",   resume))
+    app.add_handler(CommandHandler("next",     next_cmd))
+    app.add_handler(CommandHandler("status",   status))
+    app.add_handler(CommandHandler("queue",    show_queue))
+    app.add_handler(CommandHandler("broadcast",broadcast_start))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_message))
     app.add_handler(CallbackQueryHandler(button_handler))
     return app
@@ -223,37 +222,24 @@ def start_scheduler(app):
     sched = AsyncIOScheduler()
     sched.add_job(
         lambda: app.create_task(publish_next_product(app)),
-        trigger='cron', hour=12, minute=0, timezone='Europe/Moscow'
+        trigger='cron',
+        hour=12,
+        minute=0,
+        timezone='Europe/Moscow'
     )
     sched.start()
 
 def main():
-    # 1. Создаём приложение и handlers
-    app = build_application()
+    if not BOT_TOKEN or not WEBHOOK_URL:
+        logger.error("BOT_TOKEN и WEBHOOK_URL должны быть заданы в окружении")
+        return
 
-    # 2. Загружаем товары и запускаем планировщик
+    app = build_application()
     load_products_from_sources()
     start_scheduler(app)
     logger.info("Бот запущен и готов к работе.")
 
-    # 3. Регистрируем webhook в Telegram
-    import asyncio
-
-async def main():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     PORT = int(os.getenv("PORT", "8080"))
-
-    if not BOT_TOKEN or not WEBHOOK_URL:
-        print("Ошибка: не задан BOT_TOKEN или WEBHOOK_URL.")
-        return
-
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Устанавливаем webhook с await
-    await app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
-
-    # Запускаем приложение с вебхуком
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
@@ -262,4 +248,4 @@ async def main():
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
