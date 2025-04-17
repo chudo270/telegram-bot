@@ -2,6 +2,7 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 import nest_asyncio
 nest_asyncio.apply()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
