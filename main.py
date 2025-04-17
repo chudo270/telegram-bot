@@ -182,6 +182,9 @@ async def start_bot():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Удаляем webhook перед запуском polling
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.ALL, handle_broadcast))
@@ -191,6 +194,7 @@ async def start_bot():
     scheduler.start()
 
     await app.run_polling()
+
 
 if __name__ == "__main__":
     import nest_asyncio
