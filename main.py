@@ -1,3 +1,5 @@
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 import asyncio
 import logging
 import os
@@ -272,12 +274,14 @@ def start_scheduler(application: Application):
     )
     scheduler.start()
 
-
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
     app = build_application()
     PORT = int(os.environ.get("PORT", 8080))
+
     asyncio.run(app.initialize())
     asyncio.run(app.start())
     asyncio.run(app.bot.set_webhook(f"{WEBHOOK_URL}"))
-    asyncio.run(app.updater.start_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL))
     asyncio.get_event_loop().run_forever()
