@@ -2,21 +2,23 @@ import logging
 import os
 import requests
 import xml.etree.ElementTree as ET
-from datetime import time
+import asyncio
 
+from fastapi import FastAPI, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
+    Application,
     CallbackQueryHandler,
-    MessageHandler,
+    CommandHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Настройки из окружения
-WEBHOOK_URL       = os.getenv("WEBHOOK_URL")       # e.g. https://worker-production-c8d5.up.railway.app
+# Настройки
+WEBHOOK_URL       = os.getenv("WEBHOOK_URL")
 BOT_TOKEN         = os.getenv("BOT_TOKEN")
 YML_URL           = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
@@ -27,22 +29,20 @@ ADMIN_ID          = 487591931
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Состояние
 product_queue = []
 paused = False
 
 main_menu = InlineKeyboardMarkup([
-    [InlineKeyboardButton("▶️ Следующий",   callback_data="next")],
-    [InlineKeyboardButton("⏸ Пауза",        callback_data="pause"),
+    [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
+    [InlineKeyboardButton("⏸ Пауза", callback_data="pause"),
      InlineKeyboardButton("▶️ Возобновить", callback_data="resume")],
-    [InlineKeyboardButton("📦 Очередь",      callback_data="queue"),
-     InlineKeyboardButton("⏭ Пропустить",   callback_data="skip")],
-    [InlineKeyboardButton("📊 Статус",       callback_data="status"),
-     InlineKeyboardButton("📝 Логи",        callback_data="log")],
-    [InlineKeyboardButton("📢 Рассылка",     callback_data="broadcast")],
-    [InlineKeyboardButton("🧠 Нейросеть",    callback_data="ai")]
+    [InlineKeyboardButton("📦 Очередь", callback_data="queue"),
+     InlineKeyboardButton("⏭ Пропустить", callback_data="skip")],
+    [InlineKeyboardButton("📊 Статус", callback_data="status"),
+     InlineKeyboardButton("📝 Логи", callback_data="log")],
+    [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")],
+    [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
 ])
-
 def load_products_from_yml(yml_url):
     try:
         r = requests.get(yml_url)
@@ -68,7 +68,7 @@ def load_products_from_yml(yml_url):
                             "description": desc
                         })
                 except ValueError:
-                    pass
+                    continue
         global product_queue
         product_queue = prods
         logger.info(f"Загружено товаров: {len(prods)}")
@@ -106,8 +106,7 @@ def generate_description(name, description):
     except Exception as e:
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
-
-async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
+        async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
     global paused, product_queue
     if paused or not product_queue:
         return
@@ -129,7 +128,6 @@ async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка публикации: {e}")
 
-# Команды и коллбэки
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -164,88 +162,64 @@ async def show_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
-
-async def broadcast_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    ctx.user_data["broadcast"] = True
-    await update.message.reply_text("Пришлите текст или фото с подписью для рассылки.")
+    await update.message.reply_text("Отправьте фото с подписью для рассылки в канал.", reply_markup=main_menu)
 
-async def broadcast_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or not ctx.user_data.get("broadcast"):
+async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         return
-    ctx.user_data["broadcast"] = False
-    if update.message.photo:
-        photo   = update.message.photo[-1].file_id
-        caption = update.message.caption or ""
-        await ctx.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption)
-    else:
-        await ctx.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
+    if update.message.caption:
+        photo_file = update.message.photo[-1].file_id
+        try:
+            await ctx.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=photo_file,
+                caption=update.message.caption,
+                parse_mode="HTML"
+            )
+            await update.message.reply_text("Сообщение отправлено в канал.", reply_markup=main_menu)
+        except Exception as e:
+            logger.error(f"Ошибка рассылки: {e}")
+            await update.message.reply_text("Ошибка при отправке.", reply_markup=main_menu)
 
-async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q    = update.callback_query
-    await q.answer()
-    data = q.data
-    if data == "next":
-        await publish_next_product(ctx)
-    elif data == "pause":
-        await pause(update, ctx)
-    elif data == "resume":
-        await resume(update, ctx)
-    elif data == "queue":
-        await show_queue(update, ctx)
-    elif data == "status":
-        await status(update, ctx)
-    elif data == "broadcast":
-        await broadcast_start(update, ctx)
-    elif data == "skip":
-        if product_queue:
-            skipped = product_queue.pop(0)
-            await q.edit_message_text(f"Пропущен: {skipped['name']}", reply_markup=main_menu)
-        else:
-            await q.edit_message_text("Очередь пуста.", reply_markup=main_menu)
-
-def build_application():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("pause",    pause))
-    app.add_handler(CommandHandler("resume",   resume))
-    app.add_handler(CommandHandler("next",     next_cmd))
-    app.add_handler(CommandHandler("status",   status))
-    app.add_handler(CommandHandler("queue",    show_queue))
-    app.add_handler(CommandHandler("broadcast",broadcast_start))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    return app
-
-def start_scheduler(app):
-    sched = AsyncIOScheduler()
-    sched.add_job(
-        lambda: app.create_task(publish_next_product(app)),
-        trigger='cron',
-        hour=12,
-        minute=0,
-        timezone='Europe/Moscow'
-    )
-    sched.start()
+async def ask_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        response = generate_description("Нейросеть", "Образец генерации описания")
+        await update.message.reply_text(f"Ответ нейросети:\n\n{response}", reply_markup=main_menu)
+    except Exception as e:
+        logger.error(f"Ошибка нейросети: {e}")
+        await update.message.reply_text("Ошибка генерации.", reply_markup=main_menu)
 
 def main():
-    if not BOT_TOKEN or not WEBHOOK_URL:
-        logger.error("BOT_TOKEN и WEBHOOK_URL должны быть заданы в окружении")
-        return
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    app = build_application()
-    load_products_from_sources()
-    start_scheduler(app)
-    logger.info("Бот запущен и готов к работе.")
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("pause", pause))
+    application.add_handler(CommandHandler("resume", resume))
+    application.add_handler(CommandHandler("next", next_cmd))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("queue", show_queue))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("log", status))
+    application.add_handler(CommandHandler("нейросеть", ask_ai))
 
-    PORT = int(os.getenv("PORT", "8080"))
-    app.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    url_path=f"/webhook/{BOT_TOKEN}",            # ← добавлен префикс
-    webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
-)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(CallbackQueryHandler(menu_callback))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(load_products, "interval", hours=1)
+    scheduler.add_job(lambda: publish_next_product(application.bot), "cron", hour=12, minute=0, timezone="Europe/Moscow")
+    scheduler.start()
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8080)),
+        webhook_url=f"{WEBHOOK_URL}"
+    )
 
 if __name__ == "__main__":
     main()
