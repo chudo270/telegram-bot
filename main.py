@@ -107,7 +107,7 @@ def generate_description(name, description):
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
         async def publish_next_product(ctx: ContextTypes.DEFAULT_TYPE):
-    global paused, product_queue
+            global paused, product_queue
     if paused or not product_queue:
         return
     p = product_queue.pop(0)
