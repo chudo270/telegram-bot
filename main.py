@@ -1,14 +1,11 @@
 import logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 import asyncio
 import os
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 import requests
 import xml.etree.ElementTree as ET
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-import nest_asyncio
-nest_asyncio.apply()
+from datetime import time
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,19 +13,23 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    filters
+    filters,
+    Application
 )
-from telegram.ext import Application
-from datetime import time
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройки
-CHANNEL_ID = "@myttoy66"
-ADMIN_ID = 487591931
-SITE_URL = "https://myttoy66.ru"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
+CHANNEL_ID = "@myttoy66"
+ADMIN_ID = 487591931
 
+# Логирование
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Глобальные переменные
 product_queue = []
 paused = False
 
@@ -52,7 +53,6 @@ def load_products_from_yml(yml_url):
         if response.status_code == 200:
             root = ET.fromstring(response.content)
             products = []
-
             for offer in root.findall(".//offer"):
                 price = offer.findtext("price")
                 picture = offer.findtext("picture")
@@ -60,7 +60,6 @@ def load_products_from_yml(yml_url):
                 url = offer.findtext("url")
                 category = offer.findtext("categoryId")
                 description = offer.findtext("description", "")
-
                 if price and picture:
                     try:
                         price = int(float(price))
@@ -69,17 +68,25 @@ def load_products_from_yml(yml_url):
                                 "id": offer.attrib.get("id"),
                                 "name": name,
                                 "price": price,
+                                "picture": picture,
                                 "url": url,
                                 "category": category,
-                                "picture": picture,
-                                "description": description or ""
+                                "description": description
                             })
                     except ValueError:
                         continue
-            return products
+            global product_queue
+            product_queue = products
+            logger.info(f"Загружено товаров: {len(products)}")
+        else:
+            logger.error(f"Ошибка загрузки YML: {response.status_code}")
     except Exception as e:
-        logging.error(f"Ошибка при загрузке YML: {e}")
+        logger.error(f"Ошибка при загрузке YML: {e}")
     return []
+
+# Обёртка для загрузки из всех источников
+def load_products_from_sources():
+    load_products_from_yml(YML_URL)
 
 # Генерация описания через GigaChat
 def generate_description(name, description):
@@ -103,7 +110,11 @@ def generate_description(name, description):
             "n": 1
         }
 
-        response = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions", json=payload, headers=headers)
+        response = requests.post(
+            "https://gigachat.devices....bank.ru/api/v1/chat/completions",
+            json=payload,
+            headers=headers
+        )
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content'].strip()
@@ -113,7 +124,7 @@ def generate_description(name, description):
         logging.error(f"Ошибка генерации описания: {e}")
 
     return "Отличный выбор по хорошей цене!"
-    
+
 # Публикация товара в канал
 async def publish_next_product(context: ContextTypes.DEFAULT_TYPE):
     global paused, product_queue
@@ -125,7 +136,10 @@ async def publish_next_product(context: ContextTypes.DEFAULT_TYPE):
     price = f"<b>{product['price']} ₽</b>"
 
     # Генерация описания
-    generated_description = generate_description(product['name'], product.get("description", ""))
+    generated_description = generate_description(
+        product['name'],
+        product.get("description", "")
+    )
 
     text = f"{title}\n\n{generated_description}\n\n{price}"
     buttons = InlineKeyboardMarkup([
@@ -167,6 +181,7 @@ async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     paused = False
     await update.message.reply_text("Публикации возобновлены.", reply_markup=main_menu)
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -181,7 +196,10 @@ async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
+    await update.message.reply_text(
+        f"В очереди: {len(product_queue)} товаров.",
+        reply_markup=main_menu
+    )
 
 # Рассылка
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -195,51 +213,47 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["broadcast_mode"] = False
-
     if update.message.photo:
+        # фото + подпись
         photo = update.message.photo[-1].file_id
         caption = update.message.caption or ""
         await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption)
-    elif update.message.text:
+    else:
+        # просто текст
         await context.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
 
-    await update.message.reply_text("Сообщение отправлено.", reply_markup=main_menu)
-
-# Кнопки меню
+# Обработка кнопок
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if update.effective_user.id != ADMIN_ID:
-        return
-
     action = query.data
 
     if action == "next":
         await publish_next_product(context)
-        await query.edit_message_text("Следующий товар опубликован.", reply_markup=main_menu)
     elif action == "pause":
-        global paused
-        paused = True
-        await query.edit_message_text("Пауза активирована.", reply_markup=main_menu)
+        await pause(update, context)
     elif action == "resume":
-        paused = False
-        await query.edit_message_text("Публикация возобновлена.", reply_markup=main_menu)
+        await resume(update, context)
     elif action == "queue":
-        await query.edit_message_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
+        await show_queue(update, context)
     elif action == "status":
-        state = "⏸ Пауза" if paused else "▶️ Активен"
-        await query.edit_message_text(f"Текущий статус: {state}", reply_markup=main_menu)
+        await status(update, context)
     elif action == "log":
-        await query.edit_message_text("Логи не ведутся. Все стабильно.", reply_markup=main_menu)
+        await log(update, context)
     elif action == "skip":
         if product_queue:
             skipped = product_queue.pop(0)
-            await query.edit_message_text(f"Пропущен товар: {skipped['name']}", reply_markup=main_menu)
+            await query.edit_message_text(
+                f"Пропущен товар: {skipped['name']}",
+                reply_markup=main_menu
+            )
         else:
             await query.edit_message_text("Очередь пуста.", reply_markup=main_menu)
     elif action == "broadcast":
         context.user_data["broadcast_mode"] = True
         await query.edit_message_text("Отправьте сообщение (или фото с подписью) для рассылки.")
+
+# Регистрация хэндлеров
 def build_application():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -256,6 +270,11 @@ def build_application():
 
     return application
 
+# Запуск планировщика на старте
+async def on_startup(application: Application):
+    load_products_from_sources()
+    start_scheduler(application)
+    logger.info("Бот запущен и готов к работе.")
 
 def start_scheduler(application: Application):
     scheduler = AsyncIOScheduler()
@@ -268,25 +287,22 @@ def start_scheduler(application: Application):
     )
     scheduler.start()
 
-async def on_startup(application: Application):
-    load_products_from_sources()
-    start_scheduler(application)
-    logging.info("Бот запущен и готов к работе.")
+# Точка входа
+async def main():
+    app = build_application()
+    await app.initialize()
+    await on_startup(app)
+    # Регистрируем вебхук в Telegram
+    await app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+    # Запускаем встроенный HTTP‑сервер для обработки POST от Telegram
+    PORT = int(os.environ.get("PORT", 8080))
+    await app.start_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url_path=f"/{BOT_TOKEN}"
+    )
+    # Ожидание остановки
+    await app.idle()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-    app = build_application()
-
-    # Регистрируем обработчик webhook
-    app.router.add_post("/webhook", app.webhook_handler())
-
-    async def main():
-        await app.initialize()
-        await app.bot.set_webhook(WEBHOOK_URL)
-        await app.start()
-        logger.info("Webhook установлен и бот запущен.")
-        await asyncio.get_event_loop().run_forever()
-
     asyncio.run(main())
