@@ -27,7 +27,7 @@ CHANNEL_ID = "@myttoy66"
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
 YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
-GIGACHAT_TOKEN = os.getenv("GIGACHAT_AUTH_KEY")
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 product_queue = []
 paused = False
@@ -89,7 +89,7 @@ def generate_description(name, description):
             prompt += f" и описанию: {description}"
 
         headers = {
-            "Authorization": f"Bearer {GIGACHAT_TOKEN}",
+            "Authorization": f"Bearer {GIGACHAT_AUTH_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
