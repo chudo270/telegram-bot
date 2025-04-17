@@ -4,7 +4,7 @@ import os
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 import requests
 import xml.etree.ElementTree as ET
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 import nest_asyncio
 nest_asyncio.apply()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
