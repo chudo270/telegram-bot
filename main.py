@@ -1,7 +1,7 @@
+import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 import asyncio
-import logging
 import os
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 import requests
