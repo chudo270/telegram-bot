@@ -13,6 +13,7 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
+from telegram.ext import Application
 from datetime import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
