@@ -176,29 +176,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
         await update.message.reply_text("Панель управления:", reply_markup=main_menu)
 
-async def start_bot():
+import nest_asyncio
+nest_asyncio.apply()
+
+import asyncio
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например, https://botrepostai.up.railway.app
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+async def main():
     global product_queue
     product_queue = load_products_from_yml(YML_URL)
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Удаляем webhook перед запуском polling
-    await app.bot.delete_webhook(drop_pending_updates=True)
+    # Регистрируем все хендлеры
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("next", next_product))
+    application.add_handler(CommandHandler("pause", pause))
+    application.add_handler(CommandHandler("resume", resume))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("log", log))
+    application.add_handler(CommandHandler("queue", show_queue))
+    application.add_handler(CommandHandler("broadcast", broadcast_start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message))
+    application.add_handler(CallbackQueryHandler(button_callback))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_button))
-    app.add_handler(MessageHandler(filters.ALL, handle_broadcast))
+    # Устанавливаем webhook
+    await application.bot.set_webhook(url=WEBHOOK_URL)
 
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(publish_scheduled, 'cron', hour=12, minute=0, args=[app.bot])
+    scheduler.add_job(publish_scheduled, 'cron', hour=12, minute=0, args=[application.bot])
     scheduler.start()
 
-    await app.run_polling()
-
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_path=WEBHOOK_PATH,
+    )
 
 if __name__ == "__main__":
     import nest_asyncio
-    nest_asyncio.apply()
     import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(start_bot())
+
+    nest_asyncio.apply()
+    asyncio.run(main())
