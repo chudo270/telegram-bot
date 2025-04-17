@@ -4,7 +4,6 @@ import requests
 import xml.etree.ElementTree as ET
 import asyncio
 
-from fastapi import FastAPI, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -18,7 +17,6 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройки
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
@@ -43,8 +41,6 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")],
     [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
 ])
-
-app = FastAPI()
 
 # Функции для работы с продуктами
 def load_products_from_yml(yml_url):
@@ -158,12 +154,37 @@ async def next_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await publish_next_product(ctx.bot)
 
-# Обработчик вебхука
-@app.post("/webhook")
-async def webhook_handler(request: Request):
-    update = Update.de_json(await request.json(), application.bot)
-    await application.process_update(update)
-    return {"ok": True}
+async def show_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    global product_queue
+    queue_count = len(product_queue)
+    await update.message.reply_text(f"В очереди: {queue_count} товаров.", reply_markup=main_menu)
+
+async def show_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    try:
+        with open("bot.log", "r") as log_file:
+            logs = ''.join(log_file.readlines()[-10:])  # Показываем последние 10 строк
+        await update.message.reply_text(f"Последние логи:\n{logs}", reply_markup=main_menu)
+    except Exception as e:
+        logger.error(f"Ошибка чтения логов: {e}")
+        await update.message.reply_text("Не удалось загрузить логи.", reply_markup=main_menu)
+
+async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text = update.message.text.replace("/broadcast", "").strip()
+    if not text:
+        await update.message.reply_text("Введите текст для рассылки после команды /broadcast", reply_markup=main_menu)
+        return
+    try:
+        await ctx.bot.send_message(chat_id=CHANNEL_ID, text=text)
+        await update.message.reply_text("Сообщение успешно отправлено в канал!", reply_markup=main_menu)
+    except Exception as e:
+        logger.error(f"Ошибка рассылки: {e}")
+        await update.message.reply_text("Ошибка при отправке сообщения.", reply_markup=main_menu)
 
 # Основной запуск приложения
 def main():
@@ -173,17 +194,16 @@ def main():
     application.add_handler(CommandHandler("pause", pause))
     application.add_handler(CommandHandler("resume", resume))
     application.add_handler(CommandHandler("next", next_cmd))
+    application.add_handler(CommandHandler("queue", show_queue))
+    application.add_handler(CommandHandler("log", show_logs))
+    application.add_handler(CommandHandler("broadcast", broadcast))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(load_products_from_sources, "interval", hours=1)
     scheduler.add_job(lambda: asyncio.create_task(publish_next_product(application.bot)), "cron", hour=12, minute=0, timezone="Europe/Moscow")
     scheduler.start()
 
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 8080)),
-        webhook_url=f"{WEBHOOK_URL}"
-    )
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
