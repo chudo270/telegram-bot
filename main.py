@@ -212,7 +212,7 @@ def main():
     application.add_handler(CommandHandler("queue", show_queue))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("log", status))
-    application.add_handler(CommandHandler("нейросеть", ask_ai))
+    application.add_handler(CommandHandler("ai", ask_ai))
 
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(CallbackQueryHandler(menu_callback))
