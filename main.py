@@ -16,7 +16,7 @@ from telegram.ext import (
 from datetime import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-    # Настройки
+# Настройки
 CHANNEL_ID = "@myttoy66"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
@@ -26,7 +26,8 @@ GIGACHAT_TOKEN = os.getenv("GIGACHAT_TOKEN")
 
 product_queue = []
 paused = False
-   # Главное меню
+
+# Главное меню
 main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
     [InlineKeyboardButton("⏸ Пауза", callback_data="pause"),
@@ -35,9 +36,11 @@ main_menu = InlineKeyboardMarkup([
      InlineKeyboardButton("⏭ Пропустить", callback_data="skip")],
     [InlineKeyboardButton("📊 Статус", callback_data="status"),
      InlineKeyboardButton("📝 Логи", callback_data="log")],
-    [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")]
+    [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")],
+    [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
 ])
-  # Загрузка товаров из YML и генерация описания с помощью GigaChat
+
+# Загрузка товаров из YML
 def load_products_from_yml(yml_url):
     try:
         response = requests.get(yml_url)
@@ -72,7 +75,9 @@ def load_products_from_yml(yml_url):
     except Exception as e:
         logging.error(f"Ошибка при загрузке YML: {e}")
     return []
-    def generate_description(name, description):
+
+# Генерация описания через GigaChat
+def generate_description(name, description):
     try:
         prompt = f"Сделай короткое продающее описание товара по названию: {name}"
         if description:
@@ -82,91 +87,109 @@ def load_products_from_yml(yml_url):
             "Authorization": f"Bearer {GIGACHAT_TOKEN}",
             "Content-Type": "application/json"
         }
-        data = {
-            "model": "GigaChat-Pro",
-            "messages": [{"role": "user", "content": prompt}],
+        payload = {
+            "model": "GigaChat",
+            "messages": [
+                {"role": "system", "content": "Ты — маркетолог, создающий короткие продающие описания."},
+                {"role": "user", "content": prompt}
+            ],
             "temperature": 1.0,
-            "max_tokens": 100
+            "top_p": 0.9,
+            "n": 1
         }
-        response = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-                                 headers=headers, json=data)
+
+        response = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions", json=payload, headers=headers)
         if response.status_code == 200:
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            return result['choices'][0]['message']['content'].strip()
+        else:
+            logging.warning(f"GigaChat ошибка: {response.status_code} — {response.text}")
     except Exception as e:
         logging.error(f"Ошибка генерации описания: {e}")
+
     return "Отличный выбор по хорошей цене!"
     
-    # Публикация товара и обработка кнопок меню
+# Публикация товара в канал
+async def publish_next_product(context: ContextTypes.DEFAULT_TYPE):
+    global paused, product_queue
+    if paused or not product_queue:
+        return
 
-async def post_product_to_channel(bot, product):
+    product = product_queue.pop(0)
     title = f"<b>{product['name']}</b>"
-    price = f"<b>{product['price']}₽</b>"
-    url = product['url']
-    description = generate_description(product['name'], product.get("description", ""))
+    price = f"<b>{product['price']} ₽</b>"
 
-    caption = f"{title}\n\n{description}\n\nЦена: {price}"
-    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=url)]])
+    # Генерация описания
+    generated_description = generate_description(product['name'], product.get("description", ""))
 
-    await bot.send_photo(chat_id=CHANNEL_ID, photo=product["picture"], caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+    text = f"{title}\n\n{generated_description}\n\n{price}"
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Купить", url=product['url'])]
+    ])
 
-async def publish_scheduled(context: ContextTypes.DEFAULT_TYPE):
-    global paused, product_queue
-    if not paused and product_queue:
-        product = product_queue.pop(0)
-        await post_product_to_channel(context.bot, product)
+    try:
+        await context.bot.send_photo(
+            chat_id=CHANNEL_ID,
+            photo=product['picture'],
+            caption=text,
+            reply_markup=buttons,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка публикации товара: {e}")
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global paused, product_queue
+# Команды управления
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+    await update.message.reply_text("Бот запущен.", reply_markup=main_menu)
 
-    query = update.callback_query
-    await query.answer()
+async def next_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await publish_next_product(context)
 
-    if query.data == "next":
-        if product_queue:
-            product = product_queue.pop(0)
-            await post_product_to_channel(context.bot, product)
-        else:
-            await query.edit_message_text("Очередь пуста.", reply_markup=main_menu)
+async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id != ADMIN_ID:
+        return
+    paused = True
+    await update.message.reply_text("Публикации приостановлены.", reply_markup=main_menu)
 
-    elif query.data == "pause":
-        paused = True
-        await query.edit_message_text("Публикация приостановлена.", reply_markup=main_menu)
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id != ADMIN_ID:
+        return
+    paused = False
+    await update.message.reply_text("Публикации возобновлены.", reply_markup=main_menu)
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    state = "⏸ Пауза" if paused else "▶️ Активен"
+    await update.message.reply_text(f"Текущий статус: {state}", reply_markup=main_menu)
 
-    elif query.data == "resume":
-        paused = False
-        await query.edit_message_text("Публикация возобновлена.", reply_markup=main_menu)
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Логи не ведутся. Все стабильно.", reply_markup=main_menu)
 
-    elif query.data == "queue":
-        await query.edit_message_text(f"Товаров в очереди: {len(product_queue)}", reply_markup=main_menu)
+async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
 
-    elif query.data == "status":
-        status = "Пауза" if paused else "Активен"
-        await query.edit_message_text(f"Статус: {status}", reply_markup=main_menu)
+# Рассылка
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    context.user_data["broadcast_mode"] = True
+    await update.message.reply_text("Отправьте сообщение (или фото с подписью) для рассылки.")
 
-    elif query.data == "log":
-        await query.edit_message_text("Логов нет — всё работает нормально.", reply_markup=main_menu)
-
-    elif query.data == "skip":
-        if product_queue:
-            skipped = product_queue.pop(0)
-            await query.edit_message_text(f"Пропущен: {skipped['name']}", reply_markup=main_menu)
-        else:
-            await query.edit_message_text("Очередь пуста.", reply_markup=main_menu)
-
-    elif query.data == "broadcast":
-        await query.edit_message_text("Отправь сообщение (или фото с подписью) для рассылки.", reply_markup=None)
-        context.user_data["broadcast"] = True
-
-     # Команды администратора и запуск бота через webhook
-
-async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID or not context.user_data.get("broadcast"):
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or not context.user_data.get("broadcast_mode"):
         return
 
-    context.user_data["broadcast"] = False
+    context.user_data["broadcast_mode"] = False
 
     if update.message.photo:
         photo = update.message.photo[-1].file_id
@@ -175,90 +198,83 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.message.text:
         await context.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
 
-    await update.message.reply_text("Сообщение отправлено в канал.", reply_markup=main_menu)
+    await update.message.reply_text("Сообщение отправлено.", reply_markup=main_menu)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Панель управления:", reply_markup=main_menu)
+# Кнопки меню
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        return
 
-# Обработчики команд
-async def next_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        if product_queue:
-            product = product_queue.pop(0)
-            await post_product_to_channel(context.bot, product)
-        else:
-            await update.message.reply_text("Очередь пуста.", reply_markup=main_menu)
+    action = query.data
 
-async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global paused
-    if update.effective_user.id == ADMIN_ID:
+    if action == "next":
+        await publish_next_product(context)
+        await query.edit_message_text("Следующий товар опубликован.", reply_markup=main_menu)
+    elif action == "pause":
+        global paused
         paused = True
-        await update.message.reply_text("Публикация приостановлена.", reply_markup=main_menu)
-
-async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global paused
-    if update.effective_user.id == ADMIN_ID:
+        await query.edit_message_text("Пауза активирована.", reply_markup=main_menu)
+    elif action == "resume":
         paused = False
-        await update.message.reply_text("Публикация возобновлена.", reply_markup=main_menu)
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        s = "Пауза" if paused else "Активен"
-        await update.message.reply_text(f"Статус: {s}", reply_markup=main_menu)
-
-async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text("Логов нет — всё работает нормально.", reply_markup=main_menu)
-
-async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        await update.message.reply_text(f"Товаров в очереди: {len(product_queue)}", reply_markup=main_menu)
-
-async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_ID:
-        context.user_data["broadcast"] = True
-        await update.message.reply_text("Отправь сообщение или фото для рассылки.", reply_markup=None)
-
-# Запуск бота с вебхуком
-async def main():
-    global product_queue
-    product_queue = load_products_from_yml(YML_URL)
-
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+        await query.edit_message_text("Публикация возобновлена.", reply_markup=main_menu)
+    elif action == "queue":
+        await query.edit_message_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
+    elif action == "status":
+        state = "⏸ Пауза" if paused else "▶️ Активен"
+        await query.edit_message_text(f"Текущий статус: {state}", reply_markup=main_menu)
+    elif action == "log":
+        await query.edit_message_text("Логи не ведутся. Все стабильно.", reply_markup=main_menu)
+    elif action == "skip":
+        if product_queue:
+            skipped = product_queue.pop(0)
+            await query.edit_message_text(f"Пропущен товар: {skipped['name']}", reply_markup=main_menu)
+        else:
+            await query.edit_message_text("Очередь пуста.", reply_markup=main_menu)
+    elif action == "broadcast":
+        context.user_data["broadcast_mode"] = True
+        await query.edit_message_text("Отправьте сообщение (или фото с подписью) для рассылки.")
+def build_application():
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("next", next_product))
     application.add_handler(CommandHandler("pause", pause))
     application.add_handler(CommandHandler("resume", resume))
+    application.add_handler(CommandHandler("next", next_product))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("log", log))
     application.add_handler(CommandHandler("queue", show_queue))
     application.add_handler(CommandHandler("broadcast", broadcast_start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_broadcast))
-    application.add_handler(CallbackQueryHandler(handle_button))
+    application.add_handler(MessageHandler(filters.ALL, broadcast_message))
+    application.add_handler(CallbackQueryHandler(button_callback))
 
-    # Установка webhook
-    WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # Пример: https://botrepostai.up.railway.app
-    WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-    WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+    return application
 
-    await application.bot.set_webhook(url=WEBHOOK_URL)
 
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(publish_scheduled, 'cron', hour=12, minute=0, args=[application.bot])
+async def on_startup(application: Application):
+    load_products_from_sources()
+    start_scheduler(application)
+    logger.info("Бот запущен и готов к работе.")
+
+
+def start_scheduler(application: Application):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        lambda: application.create_task(publish_next_product(application)),
+        trigger='cron',
+        hour=12,
+        minute=0,
+        timezone='Europe/Moscow'
+    )
     scheduler.start()
 
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
-        webhook_path=WEBHOOK_PATH,
-    )
 
 if __name__ == "__main__":
-    import nest_asyncio
-    import asyncio
-
-    nest_asyncio.apply()
-    asyncio.run(main())
+    app = build_application()
+    PORT = int(os.environ.get("PORT", 8443))
+    asyncio.run(app.initialize())
+    asyncio.run(app.start())
+    asyncio.run(app.bot.set_webhook(f"{WEBHOOK_URL}"))
+    asyncio.run(app.updater.start_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL))
+    asyncio.get_event_loop().run_forever()
