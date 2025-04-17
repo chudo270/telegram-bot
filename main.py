@@ -22,7 +22,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройки
 CHANNEL_ID = "@myttoy66"
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
 YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
