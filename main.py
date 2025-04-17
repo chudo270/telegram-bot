@@ -235,15 +235,29 @@ def main():
     logger.info("Бот запущен и готов к работе.")
 
     # 3. Регистрируем webhook в Telegram
-    app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+    import asyncio
 
-    # 4. Запускаем встроенный HTTP‑сервер для обработки обновлений
+async def main():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
     PORT = int(os.getenv("PORT", "8080"))
+
+    if not BOT_TOKEN or not WEBHOOK_URL:
+        print("Ошибка: не задан BOT_TOKEN или WEBHOOK_URL.")
+        return
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Устанавливаем webhook с await
+    await app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+    # Запускаем приложение с вебхуком
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=f"/{BOT_TOKEN}",
-    webhook_url=WEBHOOK_URL
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
 if __name__ == "__main__":
+    asyncio.run(main())
