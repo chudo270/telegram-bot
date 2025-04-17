@@ -3,6 +3,7 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 import asyncio
+from telegram.ext import Application
 from datetime import time
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
