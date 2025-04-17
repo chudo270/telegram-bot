@@ -257,12 +257,6 @@ def build_application():
     return application
 
 
-async def on_startup(application: Application):
-    load_products_from_sources()
-    start_scheduler(application)
-    logger.info("Бот запущен и готов к работе.")
-
-
 def start_scheduler(application: Application):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -274,17 +268,25 @@ def start_scheduler(application: Application):
     )
     scheduler.start()
 
+async def on_startup(application: Application):
+    load_products_from_sources()
+    start_scheduler(application)
+    logging.info("Бот запущен и готов к работе.")
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     app = build_application()
-    PORT = int(os.environ.get("PORT", 8080))
+
+    # Регистрируем обработчик webhook
+    app.router.add_post("/webhook", app.webhook_handler())
 
     async def main():
         await app.initialize()
         await app.bot.set_webhook(WEBHOOK_URL)
         await app.start()
-        logger.info(f"Бот слушает webhook на порту {PORT}.")
+        logger.info("Webhook установлен и бот запущен.")
+        await asyncio.get_event_loop().run_forever()
 
     asyncio.run(main())
