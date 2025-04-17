@@ -7,3 +7,5 @@ feedparser
 beautifulsoup4
 aiohttp
 PyYAML
+fastapi
+uvicorn
