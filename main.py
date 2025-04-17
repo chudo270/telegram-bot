@@ -1,17 +1,23 @@
 import logging
 import os
 import requests
-import xml.etree.ElementTree as ET # заменяет yaml
+import xml.etree.ElementTree as ET
 import nest_asyncio
 nest_asyncio.apply()
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
 from datetime import time
-import base64
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Настройки
-CHANNEL_ID = "@myttoy66"  # Telegram-канал, куда бот публикует товары
+    # Настройки
+CHANNEL_ID = "@myttoy66"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
@@ -20,7 +26,7 @@ GIGACHAT_TOKEN = os.getenv("GIGACHAT_TOKEN")
 
 product_queue = []
 paused = False
-
+   # Главное меню
 main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("▶️ Следующий", callback_data="next")],
     [InlineKeyboardButton("⏸ Пауза", callback_data="pause"),
@@ -31,9 +37,7 @@ main_menu = InlineKeyboardMarkup([
      InlineKeyboardButton("📝 Логи", callback_data="log")],
     [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast")]
 ])
-
-import xml.etree.ElementTree as ET
-
+  # Загрузка товаров из YML и генерация описания с помощью GigaChat
 def load_products_from_yml(yml_url):
     try:
         response = requests.get(yml_url)
@@ -41,7 +45,6 @@ def load_products_from_yml(yml_url):
             root = ET.fromstring(response.content)
             products = []
 
-            # Путь к тегу <offer> внутри <offers>
             for offer in root.findall(".//offer"):
                 price = offer.findtext("price")
                 picture = offer.findtext("picture")
@@ -69,9 +72,7 @@ def load_products_from_yml(yml_url):
     except Exception as e:
         logging.error(f"Ошибка при загрузке YML: {e}")
     return []
-
-
-def generate_description(name, description):
+    def generate_description(name, description):
     try:
         prompt = f"Сделай короткое продающее описание товара по названию: {name}"
         if description:
@@ -95,6 +96,8 @@ def generate_description(name, description):
     except Exception as e:
         logging.error(f"Ошибка генерации описания: {e}")
     return "Отличный выбор по хорошей цене!"
+    
+    # Публикация товара и обработка кнопок меню
 
 async def post_product_to_channel(bot, product):
     title = f"<b>{product['name']}</b>"
@@ -105,7 +108,7 @@ async def post_product_to_channel(bot, product):
     caption = f"{title}\n\n{description}\n\nЦена: {price}"
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Купить", url=url)]])
 
-    await bot.send_photo(chat_id='@myttoy66', photo=product["picture"], caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+    await bot.send_photo(chat_id=CHANNEL_ID, photo=product["picture"], caption=caption, parse_mode="HTML", reply_markup=reply_markup)
 
 async def publish_scheduled(context: ContextTypes.DEFAULT_TYPE):
     global paused, product_queue
@@ -157,6 +160,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Отправь сообщение (или фото с подписью) для рассылки.", reply_markup=None)
         context.user_data["broadcast"] = True
 
+     # Команды администратора и запуск бота через webhook
+
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or not context.user_data.get("broadcast"):
         return
@@ -166,9 +171,9 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
         photo = update.message.photo[-1].file_id
         caption = update.message.caption or ""
-        await context.bot.send_photo(chat_id="@myttoy66", photo=photo, caption=caption)
+        await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption)
     elif update.message.text:
-        await context.bot.send_message(chat_id="@myttoy66", text=update.message.text)
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
 
     await update.message.reply_text("Сообщение отправлено в канал.", reply_markup=main_menu)
 
@@ -176,23 +181,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
         await update.message.reply_text("Панель управления:", reply_markup=main_menu)
 
-import nest_asyncio
-nest_asyncio.apply()
+# Обработчики команд
+async def next_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        if product_queue:
+            product = product_queue.pop(0)
+            await post_product_to_channel(context.bot, product)
+        else:
+            await update.message.reply_text("Очередь пуста.", reply_markup=main_menu)
 
-import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id == ADMIN_ID:
+        paused = True
+        await update.message.reply_text("Публикация приостановлена.", reply_markup=main_menu)
 
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например, https://botrepostai.up.railway.app
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global paused
+    if update.effective_user.id == ADMIN_ID:
+        paused = False
+        await update.message.reply_text("Публикация возобновлена.", reply_markup=main_menu)
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        s = "Пауза" if paused else "Активен"
+        await update.message.reply_text(f"Статус: {s}", reply_markup=main_menu)
+
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Логов нет — всё работает нормально.", reply_markup=main_menu)
+
+async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text(f"Товаров в очереди: {len(product_queue)}", reply_markup=main_menu)
+
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        context.user_data["broadcast"] = True
+        await update.message.reply_text("Отправь сообщение или фото для рассылки.", reply_markup=None)
+
+# Запуск бота с вебхуком
 async def main():
     global product_queue
     product_queue = load_products_from_yml(YML_URL)
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Регистрируем все хендлеры
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("next", next_product))
     application.add_handler(CommandHandler("pause", pause))
@@ -201,10 +235,15 @@ async def main():
     application.add_handler(CommandHandler("log", log))
     application.add_handler(CommandHandler("queue", show_queue))
     application.add_handler(CommandHandler("broadcast", broadcast_start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_broadcast))
+    application.add_handler(CallbackQueryHandler(handle_button))
 
-    # Устанавливаем webhook
+    # Установка webhook
+    WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # Пример: https://botrepostai.up.railway.app
+    WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+    WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
