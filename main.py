@@ -4,7 +4,7 @@ import os
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 import requests
 import xml.etree.ElementTree as ET
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 import nest_asyncio
 nest_asyncio.apply()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -26,7 +26,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 487591931
 SITE_URL = "https://myttoy66.ru"
 YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
-GIGACHAT_TOKEN = os.getenv("GIGACHAT_TOKEN")
+GIGACHAT_TOKEN = os.getenv("GIGACHAT_AUTH_KEY")
 
 product_queue = []
 paused = False
@@ -240,7 +240,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["broadcast_mode"] = True
         await query.edit_message_text("Отправьте сообщение (или фото с подписью) для рассылки.")
 def build_application():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("pause", pause))
@@ -276,7 +276,7 @@ def start_scheduler(application: Application):
 
 if __name__ == "__main__":
     app = build_application()
-    PORT = int(os.environ.get("PORT", 8443))
+    PORT = int(os.environ.get("PORT", 8080))
     asyncio.run(app.initialize())
     asyncio.run(app.start())
     asyncio.run(app.bot.set_webhook(f"{WEBHOOK_URL}"))
