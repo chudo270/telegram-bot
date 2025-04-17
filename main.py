@@ -18,12 +18,12 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройки
-WEBHOOK_URL       = os.getenv("WEBHOOK_URL")
-BOT_TOKEN         = os.getenv("BOT_TOKEN")
-YML_URL           = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+YML_URL = "https://cdn.mysitemapgenerator.com/shareapi/yml/16046306746_514"
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
-CHANNEL_ID        = "@myttoy66"
-ADMIN_ID          = 487591931
+CHANNEL_ID = "@myttoy66"
+ADMIN_ID = 487591931
 
 # Логирование
 logging.basicConfig(level=logging.INFO)
@@ -44,6 +44,9 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("🧠 Нейросеть", callback_data="ai")]
 ])
 
+app = FastAPI()
+
+# Функции для работы с продуктами
 def load_products_from_yml(yml_url):
     try:
         r = requests.get(yml_url)
@@ -52,10 +55,10 @@ def load_products_from_yml(yml_url):
         prods = []
         for offer in root.findall(".//offer"):
             price = offer.findtext("price")
-            pic   = offer.findtext("picture")
-            name  = offer.findtext("name")
-            url   = offer.findtext("url")
-            desc  = offer.findtext("description", "")
+            pic = offer.findtext("picture")
+            name = offer.findtext("name")
+            url = offer.findtext("url")
+            desc = offer.findtext("description", "")
             if price and pic:
                 try:
                     price_i = int(float(price))
@@ -92,7 +95,7 @@ def generate_description(name, description):
             "model": "GigaChat",
             "messages": [
                 {"role": "system", "content": "Ты — маркетолог, создающий короткие продающие описания."},
-                {"role": "user",   "content": prompt}
+                {"role": "user", "content": prompt}
             ],
             "temperature": 1.0,
             "top_p": 0.9,
@@ -108,6 +111,7 @@ def generate_description(name, description):
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
 
+# Асинхронные функции Telegram
 async def publish_next_product(bot):
     global paused, product_queue
     if paused or not product_queue:
@@ -154,53 +158,14 @@ async def next_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await publish_next_product(ctx.bot)
 
-async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    state = "⏸ Пауза" if paused else "▶️ Активен"
-    await update.message.reply_text(f"Текущий статус: {state}", reply_markup=main_menu)
+# Обработчик вебхука
+@app.post("/webhook")
+async def webhook_handler(request: Request):
+    update = Update.de_json(await request.json(), application.bot)
+    await application.process_update(update)
+    return {"ok": True}
 
-async def show_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text(f"В очереди: {len(product_queue)} товаров.", reply_markup=main_menu)
-
-async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Отправьте фото с подписью для рассылки в канал.", reply_markup=main_menu)
-
-async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if update.message.caption:
-        photo_file = update.message.photo[-1].file_id
-        try:
-            await ctx.bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=photo_file,
-                caption=update.message.caption,
-                parse_mode="HTML"
-            )
-            await update.message.reply_text("Сообщение отправлено в канал.", reply_markup=main_menu)
-        except Exception as e:
-            logger.error(f"Ошибка рассылки: {e}")
-            await update.message.reply_text("Ошибка при отправке.", reply_markup=main_menu)
-
-async def ask_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        response = generate_description("Нейросеть", "Образец генерации описания")
-        await update.message.reply_text(f"Ответ нейросети:\n\n{response}", reply_markup=main_menu)
-    except Exception as e:
-        logger.error(f"Ошибка нейросети: {e}")
-        await update.message.reply_text("Ошибка генерации.", reply_markup=main_menu)
-
-# Заглушка для menu_callback для обработки callback запросов
-async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-
+# Основной запуск приложения
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -208,14 +173,6 @@ def main():
     application.add_handler(CommandHandler("pause", pause))
     application.add_handler(CommandHandler("resume", resume))
     application.add_handler(CommandHandler("next", next_cmd))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("queue", show_queue))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("log", status))
-    application.add_handler(CommandHandler("ai", ask_ai))
-
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(CallbackQueryHandler(menu_callback))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(load_products_from_sources, "interval", hours=1)
