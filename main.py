@@ -9,7 +9,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
+    ContextTypes
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -39,8 +39,7 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Рассылка",     callback_data="broadcast")],
     [InlineKeyboardButton("🧠 Нейросеть",    callback_data="ai")]
 ])
-
-# ====== Функции загрузки товаров ======
+# ====== Загрузка товаров из YML ======
 def load_products_from_yml(yml_url):
     try:
         r = requests.get(yml_url)
@@ -75,8 +74,7 @@ def load_products_from_yml(yml_url):
 
 def load_products_from_sources():
     load_products_from_yml(YML_URL)
-
-# ====== Генерация продающего описания ======
+    # ====== Генерация описания через GigaChat ======
 def generate_description(name, description):
     try:
         prompt = f"Сделай короткое продающее описание товара по названию: {name}"
@@ -105,7 +103,8 @@ def generate_description(name, description):
     except Exception as e:
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
-        # ====== Публикация товара ======
+
+# ====== Публикация следующего товара ======
 async def publish_next_product(bot):
     global paused, product_queue
     if paused or not product_queue:
@@ -127,132 +126,116 @@ async def publish_next_product(bot):
         )
     except Exception as e:
         logger.error(f"Ошибка публикации: {e}")
+        # ====== Декоратор для проверки администратора ======
+def admin_only(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("Доступ запрещён.")
+            return
+        return await func(update, context)
+    return wrapper
 
-# ====== Handlers для команд и кнопок ======
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text("Бот запущен.", reply_markup=main_menu)
+# ====== Команды ======
+@admin_only
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [KeyboardButton("▶️ next"), KeyboardButton("⏸ pause"), KeyboardButton("▶ resume")],
+        [KeyboardButton("📋 queue"), KeyboardButton("📤 broadcast")],
+        [KeyboardButton("🧠 нейросеть"), KeyboardButton("🪵 log")],
+        [KeyboardButton("ℹ️ status"), KeyboardButton("⏭ skip")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Меню управления ботом:", reply_markup=reply_markup)
 
-async def pause_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@admin_only
+async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await publish_next_product(context.bot)
+    await update.message.reply_text("Следующий товар опубликован.")
+
+@admin_only
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global paused
-    if update.effective_user.id != ADMIN_ID:
-        return
     paused = True
-    if update.callback_query:
-        await update.callback_query.answer("Публикации приостановлены.")
-    else:
-        await update.message.reply_text("Публикации приостановлены.", reply_markup=main_menu)
+    await update.message.reply_text("Автопубликация приостановлена.")
 
-async def resume_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+@admin_only
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global paused
-    if update.effective_user.id != ADMIN_ID:
-        return
     paused = False
-    if update.callback_query:
-        await update.callback_query.answer("Публикации возобновлены.")
+    await update.message.reply_text("Автопубликация возобновлена.")
+
+@admin_only
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "Пауза" if paused else "Активен"
+    await update.message.reply_text(f"Статус: {status}\nОчередь: {len(product_queue)} товаров")
+
+@admin_only
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Журнал логов недоступен — отправка только в Telegram.")
+
+@admin_only
+async def cmd_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not product_queue:
+        await update.message.reply_text("Очередь пуста.")
+        return
+    preview = "\n".join([f"{i+1}. {p['name']}" for i, p in enumerate(product_queue[:10])])
+    await update.message.reply_text(f"Очередь товаров:\n\n{preview}")
+
+@admin_only
+async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if product_queue:
+        skipped = product_queue.pop(0)
+        await update.message.reply_text(f"Пропущен: {skipped['name']}")
     else:
-        await update.message.reply_text("Публикации возобновлены.", reply_markup=main_menu)
+        await update.message.reply_text("Очередь пуста.")
 
-async def next_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if update.callback_query:
-        await update.callback_query.answer()
-    await publish_next_product(ctx.bot)
+@admin_only
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        caption = update.message.caption or ""
+        photo = update.message.photo[-1].file_id
+        await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=caption)
+    elif update.message.text:
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=update.message.text)
+    await update.message.reply_text("Сообщение отправлено в канал.")
 
-async def show_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    text = f"В очереди: {len(product_queue)} товаров."
-    if update.callback_query:
-        await update.callback_query.answer(text)
-    else:
-        await update.message.reply_text(text, reply_markup=main_menu)
+@admin_only
+async def cmd_neuro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = generate_description("Игрушечный робот", "Многофункциональный робот с пультом ДУ")
+    await update.message.reply_text(f"Ответ от нейросети:\n\n{text}")
+    # ====== Планировщик публикаций ======
+def schedule_daily_posting(app):
+    async def job():
+        if not paused:
+            await publish_next_product(app.bot)
 
-async def show_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        with open("bot.log", "r") as log_file:
-            logs = ''.join(log_file.readlines()[-10:])
-        if update.callback_query:
-            await update.callback_query.answer()
-            await ctx.bot.send_message(chat_id=update.effective_user.id, text=f"Последние логи:\n{logs}")
-        else:
-            await update.message.reply_text(f"Последние логи:\n{logs}", reply_markup=main_menu)
-    except Exception as e:
-        logger.error(f"Ошибка чтения логов: {e}")
-        if update.callback_query:
-            await update.callback_query.answer("Не удалось загрузить логи.")
-        else:
-            await update.message.reply_text("Не удалось загрузить логи.", reply_markup=main_menu)
-
-async def broadcast_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    text = update.message.text.replace("/broadcast", "").strip()
-    if not text:
-        await update.message.reply_text("Введите текст после /broadcast", reply_markup=main_menu)
-        return
-    try:
-        await ctx.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        await update.message.reply_text("Рассылка отправлена!", reply_markup=main_menu)
-    except Exception as e:
-        logger.error(f"Ошибка рассылки: {e}")
-        await update.message.reply_text("Ошибка при рассылке.", reply_markup=main_menu)
-
-async def skip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.callback_query.answer("Пропускаем товар…")
-    await publish_next_product(ctx.bot)
-
-async def status_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    status = "⏸ Приостановлено" if paused else "▶️ Активно"
-    await update.callback_query.answer(f"Статус бота: {status}", show_alert=True)
-
-async def ai_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.callback_query.answer("Нейросеть пока не реализована", show_alert=True)
-
-def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # — CommandHandlers
-    application.add_handler(CommandHandler("start",     start))
-    application.add_handler(CommandHandler("pause",     pause_cmd))
-    application.add_handler(CommandHandler("resume",    resume_cmd))
-    application.add_handler(CommandHandler("next",      next_cmd))
-    application.add_handler(CommandHandler("queue",     show_queue))
-    application.add_handler(CommandHandler("log",       show_logs))
-    application.add_handler(CommandHandler("broadcast", broadcast_cmd))
-
-    # — CallbackQueryHandlers
-    application.add_handler(CallbackQueryHandler(pause_cmd,     pattern="^pause$"))
-    application.add_handler(CallbackQueryHandler(resume_cmd,    pattern="^resume$"))
-    application.add_handler(CallbackQueryHandler(next_cmd,      pattern="^next$"))
-    application.add_handler(CallbackQueryHandler(skip_cmd,      pattern="^skip$"))
-    application.add_handler(CallbackQueryHandler(show_queue,    pattern="^queue$"))
-    application.add_handler(CallbackQueryHandler(show_logs,     pattern="^log$"))
-    application.add_handler(CallbackQueryHandler(broadcast_cmd, pattern="^broadcast$"))
-    application.add_handler(CallbackQueryHandler(status_cmd,    pattern="^status$"))
-    application.add_handler(CallbackQueryHandler(ai_cmd,        pattern="^ai$"))
-
-    # — Scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(load_products_from_sources, "interval", hours=1)
-    scheduler.add_job(
-        lambda: asyncio.create_task(publish_next_product(application.bot)),
-        "cron", hour=12, minute=0, timezone="Europe/Moscow"
+    job_queue = app.job_queue
+    job_queue.run_daily(
+        job,
+        time=datetime.time(hour=POST_TIME_HOUR, minute=POST_TIME_MINUTE, tzinfo=ZONE),
+        name="daily_posting"
     )
-    scheduler.start()
 
-    # — Запуск polling + сброс старого webhook
-    application.run_polling()
+# ====== Main ======
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-if __name__ == "__main__":
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(MessageHandler(filters.Regex("^▶️ next$"), cmd_next))
+    app.add_handler(MessageHandler(filters.Regex("^⏸ pause$"), cmd_pause))
+    app.add_handler(MessageHandler(filters.Regex("^▶ resume$"), cmd_resume))
+    app.add_handler(MessageHandler(filters.Regex("^ℹ️ status$"), cmd_status))
+    app.add_handler(MessageHandler(filters.Regex("^🪵 log$"), cmd_log))
+    app.add_handler(MessageHandler(filters.Regex("^📋 queue$"), cmd_queue))
+    app.add_handler(MessageHandler(filters.Regex("^⏭ skip$"), cmd_skip))
+    app.add_handler(MessageHandler(filters.Regex("^📤 broadcast$"), cmd_broadcast))
+    app.add_handler(MessageHandler(filters.Regex("^🧠 нейросеть$"), cmd_neuro))
+
+    asyncio.run(initialize_product_queue())
+
+    schedule_daily_posting(app)
+
+    app.run_polling()
+
+if __name__ == '__main__':
     main()
