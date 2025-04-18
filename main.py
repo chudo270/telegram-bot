@@ -12,6 +12,8 @@ from telegram.ext import (
     ContextTypes
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import datetime
+from pytz import timezone
 
 # ====== Настройки ======
 BOT_TOKEN         = os.getenv("BOT_TOKEN")
@@ -216,7 +218,10 @@ def schedule_daily_posting(app):
         time=datetime.time(hour=POST_TIME_HOUR, minute=POST_TIME_MINUTE, tzinfo=ZONE),
         name="daily_posting"
     )
-
+# ====== Инициализация очереди товаров ======
+async def initialize_product_queue():
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, load_products_from_sources)
 # ====== Main ======
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
