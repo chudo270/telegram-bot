@@ -189,26 +189,25 @@ async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # — CommandHandlers
+        # — CommandHandlers
     application.add_handler(CommandHandler("start",     start))
-    application.add_handler(CommandHandler("pause",     pause))
-    application.add_handler(CommandHandler("resume",    resume))
-    application.add_handler(CommandHandler("next",      next))
-    application.add_handler(CommandHandler("queue",     show))
-    application.add_handler(CommandHandler("log",       log))
-    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("pause",     pause_cmd))
+    application.add_handler(CommandHandler("resume",    resume_cmd))
+    application.add_handler(CommandHandler("next",      next_cmd))
+    application.add_handler(CommandHandler("queue",     show_queue))
+    application.add_handler(CommandHandler("log",       show_logs))
+    application.add_handler(CommandHandler("broadcast", broadcast_cmd))
 
     # — CallbackQueryHandlers
-    application.add_handler(CallbackQueryHandler(pause,    pattern="^pause$"))
-    application.add_handler(CallbackQueryHandler(resume,   pattern="^resume$"))
-    application.add_handler(CallbackQueryHandler(next,     pattern="^next$"))
-    application.add_handler(CallbackQueryHandler(skip,     pattern="^skip$"))
-    application.add_handler(CallbackQueryHandler(queue,   pattern="^queue$"))
-    application.add_handler(CallbackQueryHandler(log,    pattern="^log$"))
-    application.add_handler(CallbackQueryHandler(broadcast,pattern="^broadcast$"))
-    application.add_handler(CallbackQueryHandler(status,   pattern="^status$"))
-    application.add_handler(CallbackQueryHandler(ai,       pattern="^ai$"))
-
+    application.add_handler(CallbackQueryHandler(pause_cmd,     pattern="^pause$"))
+    application.add_handler(CallbackQueryHandler(resume_cmd,    pattern="^resume$"))
+    application.add_handler(CallbackQueryHandler(next_cmd,      pattern="^next$"))
+    application.add_handler(CallbackQueryHandler(show_queue,    pattern="^queue$"))
+    application.add_handler(CallbackQueryHandler(show_logs,     pattern="^log$"))
+    application.add_handler(CallbackQueryHandler(broadcast_cmd, pattern="^broadcast$"))
+    application.add_handler(CallbackQueryHandler(status_cmd,    pattern="^status$"))
+    application.add_handler(CallbackQueryHandler(skip_cmd,      pattern="^skip$"))
+    application.add_handler(CallbackQueryHandler(ai_cmd,        pattern="^ai$"))
     # — Scheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(load_products_from_sources, "interval", hours=1)
