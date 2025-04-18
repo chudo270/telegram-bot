@@ -3,17 +3,24 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 import asyncio
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes
-)
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import datetime
 from pytz import timezone
+from aiohttp import web
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    KeyboardButton,
+    ReplyKeyboardMarkup
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 # ====== Настройки ======
 BOT_TOKEN         = os.getenv("BOT_TOKEN")
@@ -22,10 +29,10 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 CHANNEL_ID        = "@myttoy66"
 ADMIN_ID          = 487591931
 
-TELEGRAM_TOKEN    = BOT_TOKEN  # Используем одну переменную
 POST_TIME_HOUR = 12
 POST_TIME_MINUTE = 0
 ZONE = timezone("Europe/Moscow")
+
 # ====== Логирование ======
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +52,7 @@ main_menu = InlineKeyboardMarkup([
     [InlineKeyboardButton("📢 Рассылка",     callback_data="broadcast")],
     [InlineKeyboardButton("🧠 Нейросеть",    callback_data="ai")]
 ])
+
 # ====== Загрузка товаров из YML ======
 def load_products_from_yml(yml_url):
     try:
@@ -80,7 +88,8 @@ def load_products_from_yml(yml_url):
 
 def load_products_from_sources():
     load_products_from_yml(YML_URL)
-    # ====== Генерация описания через GigaChat ======
+
+# ====== Генерация описания ======
 def generate_description(name, description):
     try:
         prompt = f"Сделай короткое продающее описание товара по названию: {name}"
@@ -110,7 +119,7 @@ def generate_description(name, description):
         logger.warning(f"GigaChat error: {e}")
         return "Отличный выбор по хорошей цене!"
 
-# ====== Публикация следующего товара ======
+# ====== Публикация ======
 async def publish_next_product(bot):
     global paused, product_queue
     if paused or not product_queue:
@@ -132,7 +141,8 @@ async def publish_next_product(bot):
         )
     except Exception as e:
         logger.error(f"Ошибка публикации: {e}")
-        # ====== Декоратор для проверки администратора ======
+
+# ====== Декоратор ======
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_ID:
@@ -209,25 +219,15 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_neuro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = generate_description("Игрушечный робот", "Многофункциональный робот с пультом ДУ")
     await update.message.reply_text(f"Ответ от нейросети:\n\n{text}")
-    # ====== Планировщик публикаций ======
-def schedule_daily_posting(app):
-    async def job():
-        if not paused:
-            await publish_next_product(app.bot)
 
-    job_queue = app.job_queue
-    job_queue.run_daily(
-        job,
-        time=datetime.time(hour=POST_TIME_HOUR, minute=POST_TIME_MINUTE, tzinfo=ZONE),
-        name="daily_posting"
-    )
-# ====== Инициализация очереди товаров ======
+# ====== Инициализация ======
 async def initialize_product_queue():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, load_products_from_sources)
-# ====== Main ======
+
+# ====== MAIN с вебхуком ======
 async def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.Regex("^▶️ next$"), cmd_next))
@@ -241,13 +241,31 @@ async def main():
     app.add_handler(MessageHandler(filters.Regex("^🧠 нейросеть$"), cmd_neuro))
 
     await initialize_product_queue()
-    schedule_daily_posting(app)
 
-    await app.run_polling()
+    # webhook URL
+    webhook_url = "https://worker-production-c8d5.up.railway.app/webhook"
+    await app.bot.set_webhook(url=webhook_url)
 
-if __name__ == '__main__':
+    # AIOHTTP сервер
+    async def handle(request):
+        request_data = await request.json()
+        update = Update.de_json(request_data, app.bot)
+        await app.process_update(update)
+        return web.Response()
+
+    app_ = web.Application()
+    app_.router.add_post("/webhook", handle)
+
+    runner = web.AppRunner(app_)
+    await runner.setup()
+
+    PORT = int(os.getenv("PORT", 8443))
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+    print(f"Webhook запущен на {webhook_url}")
+
+if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
