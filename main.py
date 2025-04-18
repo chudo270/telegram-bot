@@ -1,6 +1,6 @@
 import logging
 import os
-import requestsimport logging
+import requests
 import os
 import requests
 import xml.etree.ElementTree as ET
