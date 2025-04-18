@@ -259,7 +259,7 @@ async def main():
     runner = web.AppRunner(app_)
     await runner.setup()
 
-    PORT = int(os.getenv("PORT", 8443))
+    PORT = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
