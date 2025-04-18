@@ -1,5 +1,7 @@
 import logging
 import os
+import requestsimport logging
+import os
 import requests
 import xml.etree.ElementTree as ET
 import asyncio
@@ -7,12 +9,9 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
-    Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -188,22 +187,39 @@ async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # Основной запуск приложения
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("pause", pause))
-    application.add_handler(CommandHandler("resume", resume))
-    application.add_handler(CommandHandler("next", next_cmd))
-    application.add_handler(CommandHandler("queue", show_queue))
-    application.add_handler(CommandHandler("log", show_logs))
-    application.add_handler(CommandHandler("broadcast", broadcast))
+    # — CommandHandlers
+    application.add_handler(CommandHandler("start",     start))
+    application.add_handler(CommandHandler("pause",     pause_cmd))
+    application.add_handler(CommandHandler("resume",    resume_cmd))
+    application.add_handler(CommandHandler("next",      next_cmd))
+    application.add_handler(CommandHandler("queue",     show_queue))
+    application.add_handler(CommandHandler("log",       show_logs))
+    application.add_handler(CommandHandler("broadcast", broadcast_cmd))
 
+    # — CallbackQueryHandlers
+    application.add_handler(CallbackQueryHandler(pause_cmd,    pattern="^pause$"))
+    application.add_handler(CallbackQueryHandler(resume_cmd,   pattern="^resume$"))
+    application.add_handler(CallbackQueryHandler(next_cmd,     pattern="^next$"))
+    application.add_handler(CallbackQueryHandler(skip_cmd,     pattern="^skip$"))
+    application.add_handler(CallbackQueryHandler(show_queue,   pattern="^queue$"))
+    application.add_handler(CallbackQueryHandler(show_logs,    pattern="^log$"))
+    application.add_handler(CallbackQueryHandler(broadcast_cmd,pattern="^broadcast$"))
+    application.add_handler(CallbackQueryHandler(status_cmd,   pattern="^status$"))
+    application.add_handler(CallbackQueryHandler(ai_cmd,       pattern="^ai$"))
+
+    # — Scheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(load_products_from_sources, "interval", hours=1)
-    scheduler.add_job(lambda: asyncio.create_task(publish_next_product(application.bot)), "cron", hour=12, minute=0, timezone="Europe/Moscow")
+    scheduler.add_job(
+        lambda: asyncio.create_task(publish_next_product(application.bot)),
+        "cron", hour=12, minute=0, timezone="Europe/Moscow"
+    )
     scheduler.start()
 
-    application.run_polling()
+    # — Запуск polling + сброс старого webhook
+    application.run_polling(clean=True)
 
 if __name__ == "__main__":
     main()
