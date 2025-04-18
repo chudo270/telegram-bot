@@ -264,8 +264,11 @@ async def main():
     await site.start()
 
     print(f"Webhook запущен на {webhook_url}")
-
+import os
+import uvicorn
 if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
     asyncio.run(main())
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
