@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Бонусная система | Моя Игрушка</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f9f9f9;
+      color: #333;
+    }
+    header {
+      background-color: #ff6f61;
+      color: white;
+      padding: 1rem;
+      text-align: center;
+    }
+    main {
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 1rem;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+    p {
+      font-size: 1.1rem;
+      line-height: 1.6;
+    }
+    .bonus-highlight {
+      background-color: #fff3cd;
+      border-left: 6px solid #ffeeba;
+      padding: 1rem;
+      margin: 1.5rem 0;
+      border-radius: 4px;
+    }
+    @media (max-width: 600px) {
+      main {
+        margin: 1rem;
+        padding: 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Бонусная система</h1>
+  </header>
+  <main>
+    <p>Мы ценим каждого клиента и предлагаем выгодную бонусную программу. За каждую покупку вы получаете бонусы, которые можно использовать для оплаты следующих заказов.</p>
+
+    <div class="bonus-highlight">
+      <strong>Пример:</strong> За каждые 1000 ₽ покупки вы получаете 50 ₽ бонусами. Эти бонусы можно использовать при следующих покупках, включая товары со скидками.
+    </div>
+
+    <p>Бонусами можно оплатить всю сумму заказа. Накопленные бонусы не имеют срока действия и доступны для использования в любое время.</p>
+
+    <p>Присоединяйтесь к нашей бонусной программе и делайте покупки ещё выгоднее!</p>
+  </main>
+</body>
+</html>
