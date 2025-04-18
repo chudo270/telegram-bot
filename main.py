@@ -252,7 +252,7 @@ def main():
     scheduler.start()
 
     # — Запуск polling + сброс старого webhook
-    application.run_polling(clean=True)
+    application.run_polling().
 
 if __name__ == "__main__":
     main()
