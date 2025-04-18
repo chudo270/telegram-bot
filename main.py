@@ -20,6 +20,7 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 CHANNEL_ID        = "@myttoy66"
 ADMIN_ID          = 487591931
 
+TELEGRAM_TOKEN    = BOT_TOKEN  # Используем одну переменную
 # ====== Логирование ======
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
