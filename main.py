@@ -23,6 +23,9 @@ CHANNEL_ID        = "@myttoy66"
 ADMIN_ID          = 487591931
 
 TELEGRAM_TOKEN    = BOT_TOKEN  # Используем одну переменную
+POST_TIME_HOUR = 12
+POST_TIME_MINUTE = 0
+ZONE = timezone("Europe/Moscow")
 # ====== Логирование ======
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
