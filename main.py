@@ -226,7 +226,7 @@ async def initialize_product_queue():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, load_products_from_sources)
 # ====== Main ======
-def main():
+async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
@@ -240,11 +240,10 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^📤 broadcast$"), cmd_broadcast))
     app.add_handler(MessageHandler(filters.Regex("^🧠 нейросеть$"), cmd_neuro))
 
-    asyncio.run(initialize_product_queue())
-
+    await initialize_product_queue()
     schedule_daily_posting(app)
 
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
