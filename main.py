@@ -265,7 +265,7 @@ async def main():
 
     print(f"Webhook запущен на {webhook_url}")
     import os
-import uvicorn
+    import uvicorn
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
