@@ -265,3 +265,5 @@ async def main():
 
     print(f"Webhook запущен на {webhook_url}")
     
+    await application.bot.set_webhook(WEBHOOK_URL)
+    
