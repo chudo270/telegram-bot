@@ -1,0 +1,334 @@
+<?php
+// bot.php
+
+// ——————————————————————————————————————————————————————————
+//  Настройки
+// ——————————————————————————————————————————————————————————
+$token  = '7861740255:AAEO0gnEpkWSGXvQq_iqYVYiimkBuEMie0g';
+$apiKey = 'eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjUwNDE3djEiLCJ0eXAiOiJKV1QifQ.eyJlbnQiOjEsImV4cCI6MTc2MjgyMTY4MywiaWQiOiIwMTk2YzQ4My1hMTg1LTc5ZjEtYWY5NS1lMTg4NWE3YTI1YTEiLCJpaWQiOjEwMDk5NTMwLCJvaWQiOjc3NDE1LCJzIjoxMDczNzQyODY0LCJzaWQiOiI1OWU1MzE4My1kODgwLTU4OWMtODk4OC1iZGQ2YTk0ODVhMmUiLCJ0IjpmYWxzZSwidWlkIjoxMDA5OTUzMH0.gOZOmHn0BfPxw_HoPv1eigg0Og0MYCHtt0a6IaHQ5XVhRouCVwjtv1X6__nIgnD4WqmsA9FWVsLGuR447w75-g';  // ← вставь сюда свой Wildberries API-ключ
+$API_URL = "https://api.telegram.org/bot{$token}/";
+// ——————————————————————————————————————————————————————————
+// Принятие обновления от Telegram
+$update = json_decode(file_get_contents('php://input'), true);
+$my_id = '487591931'; // Замени на свой Telegram ID
+
+// Получаем ID чата из разных возможных источников
+$chat_id = null;
+
+if (isset($update['message']['chat']['id'])) {
+    $chat_id = $update['message']['chat']['id'];
+} elseif (isset($update['callback_query']['message']['chat']['id'])) {
+    $chat_id = $update['callback_query']['message']['chat']['id'];
+} elseif (isset($update['edited_message']['chat']['id'])) {
+    $chat_id = $update['edited_message']['chat']['id'];
+} elseif (isset($update['channel_post']['chat']['id'])) {
+    $chat_id = $update['channel_post']['chat']['id'];
+}
+
+// Если ID не совпадает — выходим
+if ($chat_id != $my_id) {
+    exit();
+}
+
+// Дальнейшая логика
+$chatId          = $update['message']['chat']['id']
+                 ?? $update['callback_query']['message']['chat']['id']
+                 ?? null;
+$messageText     = $update['message']['text']    ?? '';
+$callbackData    = $update['callback_query']['data'] ?? '';
+$callbackQueryId = $update['callback_query']['id']   ?? null;
+// ——————————————————————————————————————————————————————————
+function getWbProductName($nmId) {
+    $nmId = intval($nmId);
+    $url = "https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=0&spp=0&nm={$nmId}";
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 3,       // таймаут 3 секунды
+        CURLOPT_FAILONERROR    => true,    // считать не-200 ошибкой
+    ]);
+    $json = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    if ($err || !$json) {
+        // При ошибке запроса или пустом ответе возвращаем прочерк
+        return '—';
+    }
+    $data = json_decode($json, true);
+    if (!isset($data['data']['products'][0])) {
+        return '—';
+    }
+    $prod = $data['data']['products'][0];
+    // Название товара
+    $name = isset($prod['name']) ? $prod['name'] : null;
+    // Бренд товара (если нужно, например prod['brand'] или prod['brandName'])
+    $brand = isset($prod['brand']) ? $prod['brand'] 
+            : (isset($prod['brandName']) ? $prod['brandName'] : null);
+    // Итоговое строковое представление (можно объединять бренд и имя или как нужно)
+    if ($name) {
+        return trim(($brand ? $brand.' ' : '') . $name);
+    } else {
+        return '—';
+    }
+}
+
+function sendMessage($chatId, $text, $buttons = []) {
+    global $API_URL;
+    $payload = [
+        'chat_id'    => $chatId,
+        'text'       => $text,
+        'parse_mode' => 'HTML',
+    ];
+    if ($buttons) {
+        $payload['reply_markup'] = json_encode([
+            'inline_keyboard' => array_chunk($buttons, 2)
+        ]);
+    }
+    file_get_contents($API_URL . "sendMessage?" . http_build_query($payload));
+}
+
+function answerCallback($callbackQueryId) {
+    global $API_URL;
+    if (!$callbackQueryId) return;
+    file_get_contents($API_URL . "answerCallbackQuery?" . http_build_query([
+        'callback_query_id' => $callbackQueryId,
+    ]));
+}
+
+// Эта функция теперь создаёт временный файл из base64 и шлёт его как multipart
+function sendPhoto($chatId, $base64, $caption = '') {
+    global $API_URL;
+    // Убираем префикс если он есть
+    if (strpos($base64, 'base64,') !== false) {
+        $base64 = substr($base64, strpos($base64, 'base64,') + 7);
+    }
+    $data = base64_decode($base64);
+    $tmp = sys_get_temp_dir() . '/wb_sticker_' . uniqid() . '.png';
+    file_put_contents($tmp, $data);
+
+    $cfile = curl_file_create($tmp, 'image/png', basename($tmp));
+    $post = [
+        'chat_id' => $chatId,
+        'photo'   => $cfile,
+        'caption' => $caption,
+        'parse_mode' => 'HTML',
+    ];
+
+    $ch = curl_init($API_URL . "sendPhoto");
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+    curl_exec($ch);
+    curl_close($ch);
+
+    @unlink($tmp);
+}
+
+function curlGet($url, $apiKey) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ["Authorization: {$apiKey}"],
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    return $res;
+}
+
+function curlPostJson($url, $data, $apiKey) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($data),
+        CURLOPT_HTTPHEADER     => [
+            "Authorization: {$apiKey}",
+            "Content-Type: application/json"
+        ],
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    return $res;
+}
+
+function fetchAllOrders($apiKey) {
+    $dateFrom = strtotime('-30 days');
+    $params   = http_build_query([
+        'limit'    => 1000,
+        'next'     => 0,
+        'dateFrom' => $dateFrom,
+        'dateTo'   => time(),
+    ]);
+    $url  = "https://marketplace-api.wildberries.ru/api/v3/orders?{$params}";
+    $data = json_decode(curlGet($url, $apiKey), true);
+    return $data['orders'] ?? [];
+}
+
+function splitByStatus(array $orders, $apiKey) {
+    $orig = [];
+    foreach ($orders as $o) {
+        if (!empty($o['id'])) $orig[$o['id']] = $o;
+    }
+    $ids = array_keys($orig);
+    if (!$ids) return [[], [], [], $orig];
+
+    $statusUrl = "https://marketplace-api.wildberries.ru/api/v3/orders/status";
+    $sd = json_decode(curlPostJson($statusUrl, ['orders'=>$ids], $apiKey), true);
+
+    $assembly = []; $sorted = []; $pickup = [];
+    foreach ($sd['orders'] ?? [] as $s) {
+        $id = $s['id'] ?? null;
+        $wb = $s['wbStatus'] ?? '';
+        $sp = $s['supplierStatus'] ?? '';
+        if ($id && ($sp==='confirm' || $wb==='waiting')) {
+            $assembly[] = $id;
+        }
+        if ($id && in_array($wb, ['sorted','complete'], true)) {
+            $sorted[] = $id;
+        }
+        if ($id && $wb==='ready_for_pickup') {
+            $pickup[] = $id;
+        }
+    }
+    return [$assembly, $sorted, $pickup, $orig];
+}
+
+function fetchStickers(array $ids, $apiKey) {
+    if (!$ids) return [];
+    $url = "https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=png&width=58&height=40";
+    $data = json_decode(curlPostJson($url, ['orders'=>array_slice($ids,0,100)], $apiKey), true);
+    $map = [];
+    foreach ($data['stickers'] ?? [] as $st) {
+        if (!empty($st['orderId']) && !empty($st['file'])) {
+            $map[$st['orderId']] = strpos($st['file'],'data:image')===0
+                                 ? $st['file']
+                                 : 'data:image/png;base64,' . $st['file'];
+        }
+    }
+    return $map;
+}
+
+function fetchStickerNumbers(array $ids, $apiKey) {
+    if (!$ids) return [];
+    $url = "https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=zplh&width=58&height=40";
+    $data = json_decode(curlPostJson($url, ['orders'=>array_slice($ids,0,100)], $apiKey), true);
+    $map = [];
+    foreach ($data['stickers'] ?? [] as $st) {
+        if (!empty($st['orderId']) && preg_match('/\b(\d{6,})\b/', $st['file'] ?? '', $m)) {
+            $map[$st['orderId']] = $m[1];
+        }
+    }
+    return $map;
+}
+// ——————————————————————————————————————————————————————————
+//  Обработка команд
+// ——————————————————————————————————————————————————————————
+
+if ($messageText === '/start') {
+    sendMessage($chatId,
+        "Привет! Я покажу тебе заказы на сборке Wildberries.\n" .
+        "Напиши /orders"
+    );
+    exit;
+}
+
+// Обработка команды /orders
+if ($messageText === '/orders') {
+    $buttons = [
+        ['text' => 'Заказы на сборке', 'callback_data' => 'category_assembly'],
+        ['text' => 'Отсортированные заказы', 'callback_data' => 'category_sorted'],
+        ['text' => 'Готовы к выдаче', 'callback_data' => 'category_pickup'],
+    ];
+    sendMessage($chatId, 'Выбери категорию заказов:', $buttons);
+    exit;
+}
+
+// Обработка callback для выбора категории
+if (strpos($callbackData, 'category_') === 0) {
+    answerCallback($callbackQueryId);
+
+    $orders = fetchAllOrders($apiKey);
+    list($assemblyIds, $sortedIds, $pickupIds, $orig) = splitByStatus($orders, $apiKey);
+
+    $type = str_replace('category_', '', $callbackData);
+    $ids = [];
+    $title = '';
+
+    // Определяем, какую категорию заказов показывать
+    if ($type === 'assembly') {
+        $ids = $assemblyIds;
+        $title = "Заказы на сборке:";
+    } elseif ($type === 'sorted') {
+        $ids = $sortedIds;
+        $title = "Отсортированные заказы:";
+    } elseif ($type === 'pickup') {
+        $ids = $pickupIds;
+        $title = "Готовы к выдаче:";
+    } else {
+        sendMessage($chatId, "Неизвестная категория.");
+        exit;
+    }
+
+    // Если нет заказов в категории
+    if (empty($ids)) {
+        sendMessage($chatId, "Нет заказов в категории: $title");
+    } else {
+        // Выводим список заказов в выбранной категории
+        $buttons = [];
+        foreach ($ids as $id) {
+            $buttons[] = ['text' => "Заказ $id", 'callback_data' => "order_$id"];
+        }
+        sendMessage($chatId, $title, $buttons);
+    }
+
+    exit;
+}
+
+// Обработка callback для заказа
+if (strpos($callbackData, 'order_') === 0) {
+    // Сразу убираем «крутилку»
+    answerCallback($callbackQueryId);
+
+    $orderId = (int)substr($callbackData, 6);
+    $orders  = fetchAllOrders($apiKey);
+    list($assemblyIds, $sortedIds, $pickupIds, $orig) = splitByStatus($orders, $apiKey);
+
+    // Проверяем, если заказ не найден в статусах
+    if (!in_array($orderId, array_merge($assemblyIds, $sortedIds, $pickupIds), true)) {
+        sendMessage($chatId, "Заказ $orderId уже не на сборке или на другом статусе.");
+        exit;
+    }
+
+    // Получаем стикеры и номер заказа
+    $stickers = fetchStickers([$orderId], $apiKey);
+    $numbers  = fetchStickerNumbers([$orderId], $apiKey);
+
+    $o    = $orig[$orderId] ?? [];
+    $art  = $o['article'] ?? '—';
+    $nm   = $o['nmId']    ?? '—';
+    $num  = $numbers[$orderId] ?? '—';
+
+    $name = getWbProductName($nm) ?? '—';
+
+    $date = isset($o['createdAt'])
+          ? date('d.m.Y H:i', strtotime($o['createdAt']))
+          : '';
+
+    $caption  = "<b>Заказ $orderId</b>\n";
+    $caption .= "📦 <code>$name</code>\n";
+    $caption .= "🔢 Артикул: <code>$art</code>\n";
+    $caption .= "🆔 nmId: <code>$nm</code>\n";
+    $caption .= "📑 Номер задания: <code>$orderId</code>\n";
+    if ($date) $caption .= "🗓 Дата заказа: <i>$date</i>";
+
+    // Отправляем стикер или текстовое сообщение
+    if (!empty($stickers[$orderId])) {
+        sendPhoto($chatId, $stickers[$orderId], $caption);
+    } else {
+        sendMessage($chatId, $caption);
+    }
+
+    exit;
+}
